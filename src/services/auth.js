@@ -23,7 +23,7 @@ export const register = async (payload) => {
     throw new Error('Email already used');
   }
   const hashedPassword = await bcrypt.hash(password, 10);
-  const newUser = await UserCollection.create({ ...payload, password: hashedPassword });
+  const newUser = await UserCollection.create({ ...payload, password: hashedPassword, balance: 0 });
   return newUser;
 };
 
@@ -59,5 +59,28 @@ export const refreshUserSession = async ({ sessionId, refreshToken }) => {
   const newSession = createSession();
   return SessionCollection.create({ userId: session.userId, ...newSession });
 };
-export const findSession = (filter) => SessionCollection.findOne(filter);
-export const findUser = (filter) => UserCollection.findOne(filter);
+export const findSession = async (filter) => {
+  try {
+    const session = await SessionCollection.findOne(filter);
+    if (!session) {
+      console.log('Session not found for filter:', filter);
+    }
+    return session;
+  } catch (error) {
+    console.error('Error finding session:', error);
+    throw new Error('Error finding session');
+  }
+};
+
+export const findUser = async (filter) => {
+  try {
+    const user = await UserCollection.findOne(filter);
+    if (!user) {
+      console.log('User not found for filter:', filter);
+    }
+    return user;
+  } catch (error) {
+    console.error('Error finding user:', error);
+    throw new Error('Error finding user');
+  }
+};

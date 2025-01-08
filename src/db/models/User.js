@@ -20,6 +20,14 @@ const userSchema = new Schema(
       type: String,
       required: true,
     },
+    balance: {
+      type: Number,
+      default: 0,
+    },
+    lastBalanceUpdate: {
+      type: Date,
+      default: Date.now,
+    },
   },
   {
     timestamps: true,
