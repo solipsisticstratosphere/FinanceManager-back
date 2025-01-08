@@ -4,23 +4,11 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import { env } from './utils/env.js';
 import router from './routers/index.js';
-import pino from 'pino';
-import pretty from 'pino-pretty';
-
-// Настройка логера с pino-pretty
-const stream = pretty();
-const logger = pino(stream);
 
 const PORT = Number(env('PORT', '3000'));
 
 export const startServer = async () => {
   const app = express();
-
-  // Подключаем логирование для каждого запроса
-  app.use((req, res, next) => {
-    logger.info(`${req.method} ${req.originalUrl}`);
-    next();
-  });
 
   app.use(express.json());
   app.use(
@@ -33,20 +21,15 @@ export const startServer = async () => {
 
   app.use('/', router);
 
-  // Обработка ошибок с логированием
   app.use('*', (req, res, next) => {
-    const message = `Route ${req.method} ${req.originalUrl} not found`;
-    logger.error(message);
     res.status(404).json({
-      message,
+      message: `Route ${req.method} ${req.originalUrl} not found`,
     });
   });
 
-  // Универсальный обработчик ошибок
   app.use((err, req, res, next) => {
     const status = err.status || 500;
     const message = err.message || 'InternalServerError';
-    logger.error(`Error: ${message}, Status: ${status}`);
     res.status(status).json({
       status,
       message,
@@ -58,6 +41,6 @@ export const startServer = async () => {
   });
 
   app.listen(PORT, () => {
-    logger.info(`Server started on port ${PORT}`);
+    console.log(`Server started on port ${PORT}`);
   });
 };
