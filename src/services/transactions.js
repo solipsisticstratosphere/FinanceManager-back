@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import UserCollection from '../db/models/User.js';
 import createHttpError from 'http-errors';
 import { TransactionCollection } from '../db/models/Transaction.js';
+import { updateGoalProgress } from './goal.js';
 
 export const addTransaction = async (transactionData) => {
   const session = await mongoose.startSession();
@@ -11,12 +12,14 @@ export const addTransaction = async (transactionData) => {
     if (!user) {
       throw new createHttpError(404, 'User not found');
     }
+
     const amount = Number(transactionData.amount);
     if (transactionData.type === 'expense') {
       if (user.balance < amount) {
         throw new createHttpError(400, 'Not enough balance');
       }
     }
+
     const transaction = await TransactionCollection.create([transactionData], { session });
 
     const balanceChange = transactionData.type === 'income' ? amount : -amount;
@@ -26,8 +29,15 @@ export const addTransaction = async (transactionData) => {
       { session },
     );
 
+    const goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange);
+
     await session.commitTransaction();
-    return transaction[0];
+
+    return {
+      transaction: transaction[0],
+      goalAchieved: goalUpdate?.isAchieved || false,
+      updatedGoal: goalUpdate?.goal,
+    };
   } catch (error) {
     await session.abortTransaction();
     throw error;
@@ -35,7 +45,6 @@ export const addTransaction = async (transactionData) => {
     session.endSession();
   }
 };
-
 export const getTransactions = async (userId) => {
   const transactions = await TransactionCollection.find({ userId }).sort({ date: -1 });
   return transactions;
