@@ -20,6 +20,11 @@ const userSchema = new Schema(
       type: String,
       required: true,
     },
+    currency: {
+      type: String,
+      enum: ['UAH', 'USD', 'EUR'],
+      default: 'UAH',
+    },
     balance: {
       type: Number,
       default: 0,
