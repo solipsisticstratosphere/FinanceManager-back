@@ -1,13 +1,32 @@
 import createHttpError from 'http-errors';
 import { GoalCollection } from '../db/models/Goal.js';
 import mongoose from 'mongoose';
+import { updateForecasts } from './forecast.js';
 
 export const createGoal = async (goalData) => {
-  const exisingActiveGoal = await GoalCollection.findOne({ userId: goalData.userId, isActive: true });
-  if (exisingActiveGoal && goalData.isActive) {
-    throw new createHttpError(400, 'You already have an active goal');
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const existingActiveGoal = await GoalCollection.findOne({
+      userId: goalData.userId,
+      isActive: true,
+    });
+
+    if (existingActiveGoal && goalData.isActive) {
+      throw new createHttpError(400, 'You already have an active goal');
+    }
+
+    const goal = await GoalCollection.create([goalData], { session });
+    await updateForecasts(goalData.userId);
+
+    await session.commitTransaction();
+    return goal[0];
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
   }
-  return await GoalCollection.create(goalData);
 };
 
 export const updateGoalProgress = async (userId, balanceChange) => {
@@ -28,7 +47,7 @@ export const updateGoalProgress = async (userId, balanceChange) => {
       },
       { new: true },
     );
-
+    await updateForecasts(userId);
     return {
       goal: updatedGoal,
       isAchieved: newAmount >= activeGoal.targetAmount,
@@ -36,18 +55,22 @@ export const updateGoalProgress = async (userId, balanceChange) => {
   } else {
     const potentialNewAmount = activeGoal.currentAmount + balanceChange;
     if (potentialNewAmount < activeGoal.highestAmount) {
+      const updatedGoal = await GoalCollection.findByIdAndUpdate(
+        activeGoal._id,
+        {
+          currentAmount: potentialNewAmount,
+        },
+        { new: true, session },
+      );
+      await updateForecasts(userId);
       return {
-        goal: await GoalCollection.findByIdAndUpdate(
-          activeGoal._id,
-          { currentAmount: potentialNewAmount },
-          { new: true },
-        ),
+        goal: updatedGoal,
         isAchieved: false,
       };
     }
-  }
 
-  return { goal: activeGoal, isAchieved: false };
+    return { goal: activeGoal, isAchieved: false };
+  }
 };
 
 export const getGoals = async (userId) => {
@@ -68,7 +91,7 @@ export const setActiveGoal = async (userId, goalId) => {
     if (!goal) {
       throw new createHttpError(404, 'Goal not found');
     }
-
+    await updateForecasts(userId);
     await session.commitTransaction();
     return goal;
   } catch (error) {

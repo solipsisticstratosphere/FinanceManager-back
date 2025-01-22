@@ -3,6 +3,7 @@ import UserCollection from '../db/models/User.js';
 import createHttpError from 'http-errors';
 import { TransactionCollection } from '../db/models/Transaction.js';
 import { updateGoalProgress } from './goal.js';
+import { updateForecasts } from './forecast.js';
 
 export const addTransaction = async (transactionData) => {
   const session = await mongoose.startSession();
@@ -30,6 +31,7 @@ export const addTransaction = async (transactionData) => {
     );
 
     const goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange);
+    await updateForecasts(transactionData.userId);
 
     await session.commitTransaction();
 
