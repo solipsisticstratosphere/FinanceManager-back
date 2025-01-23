@@ -29,8 +29,8 @@ export const createGoal = async (goalData) => {
   }
 };
 
-export const updateGoalProgress = async (userId, balanceChange) => {
-  const activeGoal = await GoalCollection.findOne({ userId, isActive: true });
+export const updateGoalProgress = async (userId, balanceChange, session = null) => {
+  const activeGoal = await GoalCollection.findOne({ userId, isActive: true }).session(session);
   if (!activeGoal) return null;
 
   if (balanceChange > 0) {
@@ -42,12 +42,12 @@ export const updateGoalProgress = async (userId, balanceChange) => {
       {
         currentAmount: newAmount,
         highestAmount: highestAmount,
-
         isActive: newAmount < activeGoal.targetAmount,
       },
-      { new: true },
+      { new: true, session },
     );
-    await updateForecasts(userId);
+
+    await updateForecasts(userId, session);
     return {
       goal: updatedGoal,
       isAchieved: newAmount >= activeGoal.targetAmount,
@@ -62,7 +62,8 @@ export const updateGoalProgress = async (userId, balanceChange) => {
         },
         { new: true, session },
       );
-      await updateForecasts(userId);
+
+      await updateForecasts(userId, session);
       return {
         goal: updatedGoal,
         isAchieved: false,

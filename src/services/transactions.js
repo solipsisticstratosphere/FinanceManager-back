@@ -6,48 +6,106 @@ import { updateGoalProgress } from './goal.js';
 import { updateForecasts } from './forecast.js';
 
 export const addTransaction = async (transactionData) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  let session = null;
   try {
-    const user = await UserCollection.findById(transactionData.userId);
-    if (!user) {
-      throw new createHttpError(404, 'User not found');
+    const isTransactionSupported = await checkTransactionSupport();
+    if (!isTransactionSupported) {
+      return await processWithoutTransaction(transactionData);
     }
 
-    const amount = Number(transactionData.amount);
-    if (transactionData.type === 'expense') {
-      if (user.balance < amount) {
-        throw new createHttpError(400, 'Not enough balance');
-      }
-    }
-
-    const transaction = await TransactionCollection.create([transactionData], { session });
-
-    const balanceChange = transactionData.type === 'income' ? amount : -amount;
-    await UserCollection.findByIdAndUpdate(
-      transactionData.userId,
-      { $inc: { balance: balanceChange }, lastBalanceUpdate: new Date() },
-      { session },
-    );
-
-    const goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange);
-    await updateForecasts(transactionData.userId);
-
+    session = await mongoose.startSession();
+    session.startTransaction();
+    const result = await processWithTransaction(transactionData, session);
     await session.commitTransaction();
-
-    return {
-      transaction: transaction[0],
-      goalAchieved: goalUpdate?.isAchieved || false,
-      updatedGoal: goalUpdate?.goal,
-    };
+    return result;
   } catch (error) {
-    await session.abortTransaction();
+    if (session) {
+      await session.abortTransaction();
+    }
     throw error;
   } finally {
-    session.endSession();
+    if (session) {
+      await session.endSession();
+    }
   }
 };
+
+const checkTransactionSupport = async () => {
+  try {
+    const status = await mongoose.connection.db.admin().command({ replSetGetStatus: 1 });
+    return !!status;
+  } catch {
+    return false;
+  }
+};
+
+const processWithoutTransaction = async (transactionData) => {
+  const user = await UserCollection.findById(transactionData.userId);
+  if (!user) {
+    throw new createHttpError(404, 'User not found');
+  }
+
+  const amount = Number(transactionData.amount);
+  if (transactionData.type === 'expense' && user.balance < amount) {
+    throw new createHttpError(400, 'Not enough balance');
+  }
+
+  const transaction = await TransactionCollection.create(transactionData);
+  const balanceChange = transactionData.type === 'income' ? amount : -amount;
+
+  await UserCollection.findByIdAndUpdate(transactionData.userId, {
+    $inc: { balance: balanceChange },
+    lastBalanceUpdate: new Date(),
+  });
+
+  const goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange);
+  await updateForecasts(transactionData.userId);
+
+  return {
+    transaction,
+    goalAchieived: goalUpdate?.isAchieved || false,
+    updatedGoal: goalUpdate?.goal,
+  };
+};
+
+const processWithTransaction = async (transactionData, session) => {
+  const user = await UserCollection.findById(transactionData.userId).session(session);
+  if (!user) {
+    throw new createHttpError(404, 'User not found');
+  }
+
+  const amount = Number(transactionData.amount);
+  if (transactionData.type === 'expense' && user.balance < amount) {
+    throw new createHttpError(400, 'Not enough balance');
+  }
+
+  const transaction = await TransactionCollection.create([transactionData], { session });
+  const balanceChange = transactionData.type === 'income' ? amount : -amount;
+
+  await UserCollection.findByIdAndUpdate(
+    transactionData.userId,
+    {
+      $inc: { balance: balanceChange },
+      lastBalanceUpdate: new Date(),
+    },
+    { session },
+  );
+
+  // Важно: передаем сессию во все операции внутри транзакции
+  const goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange, session);
+  await updateForecasts(transactionData.userId, session); // Добавляем session параметр
+
+  return {
+    transaction: transaction[0],
+    goalAchieved: goalUpdate?.isAchieved || false,
+    updatedGoal: goalUpdate?.goal,
+  };
+};
+
 export const getTransactions = async (userId) => {
-  const transactions = await TransactionCollection.find({ userId }).sort({ date: -1 });
-  return transactions;
+  try {
+    return await TransactionCollection.find({ userId }).sort({ date: -1 });
+  } catch (error) {
+    throw error;
+  }
 };
