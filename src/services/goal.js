@@ -17,7 +17,7 @@ export const createGoal = async (goalData) => {
     }
 
     const goal = await GoalCollection.create([goalData], { session });
-    await updateForecasts(goalData.userId);
+    await updateForecasts(goalData.userId, session); // Передаем сессию
 
     await session.commitTransaction();
     return goal[0];
@@ -92,7 +92,7 @@ export const setActiveGoal = async (userId, goalId) => {
     if (!goal) {
       throw new createHttpError(404, 'Goal not found');
     }
-    await updateForecasts(userId);
+    await updateForecasts(userId, session); // Передаем сессию
     await session.commitTransaction();
     return goal;
   } catch (error) {
