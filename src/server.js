@@ -19,6 +19,8 @@ export const startServer = async () => {
   );
   app.use(cookieParser());
 
+  app.options('*', cors());
+
   app.use('/', router);
 
   app.use('*', (req, res, next) => {
