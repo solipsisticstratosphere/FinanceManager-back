@@ -70,10 +70,30 @@ export const getGoogleOAuthUrlController = async (req, res) => {
   });
 };
 
-export const loginWithGoogleController = async (req, res) => {
-  const session = await authServices.loginOrSignupWithGoogle(req.body.code);
-  setupSession(res, session);
-  res
-    .status(200)
-    .json({ status: 200, message: 'Successfully logged in with Google', data: { accessToken: session.accessToken } });
+export const loginWithGoogleController = async (req, res, next) => {
+  try {
+    const { code } = req.body;
+
+    if (!code) {
+      return res.status(400).json({
+        status: 400,
+        message: 'Authorization code is required',
+        data: { errors: { code: ['Authorization code is required'] } },
+      });
+    }
+
+    const result = await authServices.loginOrSignupWithGoogle(code);
+    setupSession(res, result);
+
+    return res.status(200).json({
+      status: 200,
+      message: 'Successfully logged in with Google',
+      data: {
+        accessToken: result.accessToken,
+        user: result.user,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
 };

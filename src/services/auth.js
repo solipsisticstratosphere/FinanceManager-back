@@ -62,29 +62,73 @@ export const refreshUserSession = async ({ sessionId, refreshToken }) => {
 };
 
 export const loginOrSignupWithGoogle = async (code) => {
-  const loginTicket = await validateCode(code);
-  const payload = loginTicket.getPayload();
-  if (!payload) {
-    throw createHttpError(401);
-  }
-  let user = await UserCollection.findOne({ email: payload.email });
-  if (!user) {
-    const password = await bcrypt.hash(payload.sub, 10);
-    const username = getFullNameFromGoogleTokenPayload(payload);
+  try {
+    // Validate the code parameter
+    if (!code || typeof code !== 'string') {
+      throw createHttpError(400, 'Invalid authorization code');
+    }
 
-    user = UserCollection.create({
-      email: payload.email,
-      password,
-      avatar_url: payload.picture || '',
-      name: username,
-      balance: 0,
+    const loginTicket = await validateCode(code);
+    const payload = loginTicket.getPayload();
+
+    if (!payload || !payload.email) {
+      throw createHttpError(401, 'Invalid Google token payload');
+    }
+
+    // Find or create user with better error handling
+    let user = await UserCollection.findOne({ email: payload.email });
+
+    if (!user) {
+      try {
+        const password = await bcrypt.hash(payload.sub, 10);
+        const username = getFullNameFromGoogleTokenPayload(payload);
+
+        user = await UserCollection.create({
+          email: payload.email,
+          password,
+          avatar_url: payload.picture || '',
+          name: username,
+          balance: 0,
+        });
+      } catch (error) {
+        throw createHttpError(500, 'Failed to create user account');
+      }
+    }
+
+    // Update avatar if needed
+    if (payload.picture && !user.avatar_url) {
+      try {
+        await UserCollection.findByIdAndUpdate(user._id, {
+          avatar_url: payload.picture,
+        });
+        user.avatar_url = payload.picture;
+      } catch (error) {
+        // Non-critical error, just log it
+        console.error('Failed to update avatar:', error);
+      }
+    }
+
+    const newSession = createSession();
+    const session = await SessionCollection.create({
+      userId: user._id,
+      ...newSession,
     });
-  } else if (payload.picture && !user.avatar_url) {
-    await UserCollection.findByIdAndUpdate(user._id, { avatar_url: payload.picture });
-    user.avatar_url = payload.picture;
+
+    return {
+      accessToken: session.accessToken,
+      user: {
+        name: user.name,
+        email: user.email,
+        balance: user.balance,
+        avatarUrl: user.avatar_url,
+      },
+    };
+  } catch (error) {
+    if (error.name === 'TokenExpiredError') {
+      throw createHttpError(401, 'Google authorization code expired');
+    }
+    throw error;
   }
-  const newSession = createSession();
-  return await SessionCollection.create({ userId: user._id, ...newSession });
 };
 
 export const findSession = async (filter) => {
