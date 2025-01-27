@@ -74,7 +74,6 @@ export const loginOrSignupWithGoogle = async (code) => {
 
     user = UserCollection.create({
       email: payload.email,
-
       password,
       avatar_url: payload.picture || '',
       name: username,
