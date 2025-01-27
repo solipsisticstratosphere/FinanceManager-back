@@ -44,8 +44,29 @@ export const login = async ({ email, password }) => {
   return { session: createdSession, user };
 };
 
-export const logout = async (sessionId) => {
-  await SessionCollection.deleteOne({ _id: sessionId });
+export const logout = async (sessionToken) => {
+  try {
+    if (!sessionToken) {
+      throw createHttpError(401, 'No session token provided');
+    }
+
+    // Find the session by access token instead of ID
+    const session = await SessionCollection.findOne({
+      accessToken: sessionToken,
+    });
+
+    if (!session) {
+      // If session not found, consider it already logged out
+      return true;
+    }
+
+    // Delete the session
+    await SessionCollection.deleteOne({ _id: session._id });
+    return true;
+  } catch (error) {
+    console.error('Logout error:', error);
+    throw createHttpError(500, 'Failed to logout properly');
+  }
 };
 
 export const refreshUserSession = async ({ sessionId, refreshToken }) => {

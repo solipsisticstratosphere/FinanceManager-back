@@ -51,13 +51,29 @@ export const refreshSessionController = async (req, res) => {
 };
 
 export const logoutController = async (req, res) => {
-  if (req.cookies.sessionId) {
-    await authServices.logout(req.cookies.sessionId);
-  }
+  try {
+    // Get token from Authorization header
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.split(' ')[1];
 
-  res.clearCookie('sessionId');
-  res.clearCookie('refreshToken');
-  res.status(204).send();
+    await authServices.logout(token);
+
+    // Clear cookies if you're using them
+    res.clearCookie('refreshToken');
+    res.clearCookie('accessToken');
+
+    return res.status(200).json({
+      status: 200,
+      message: 'Successfully logged out',
+    });
+  } catch (error) {
+    console.error('Logout controller error:', error);
+    const status = error.status || 500;
+    return res.status(status).json({
+      status,
+      message: error.message || 'Internal server error during logout',
+    });
+  }
 };
 
 export const getGoogleOAuthUrlController = async (req, res) => {
