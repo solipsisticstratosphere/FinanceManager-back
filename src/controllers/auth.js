@@ -1,6 +1,7 @@
 import { access } from 'fs';
 import * as authServices from '../services/auth.js';
 import { cropUserData } from '../utils/cropUserData.js';
+import { generateAuthUrl } from '../utils/googleOAuth2.js';
 
 const setupSession = (res, session) => {
   const { _id, refreshToken, refreshTokenValidUntil } = session;
@@ -57,4 +58,22 @@ export const logoutController = async (req, res) => {
   res.clearCookie('sessionId');
   res.clearCookie('refreshToken');
   res.status(204).send();
+};
+
+export const getGoogleOAuthUrlController = async (req, res) => {
+  const url = generateAuthUrl();
+
+  res.json({
+    status: 200,
+    message: 'Successfully get Google OAuth url',
+    data: { url },
+  });
+};
+
+export const loginWithGoogleController = async (req, res) => {
+  const session = await authServices.loginOrSignupWithGoogle(req.body.code);
+  setupSession(res, session);
+  res
+    .status(200)
+    .json({ status: 200, message: 'Successfully logged in with Google', data: { accessToken: session.accessToken } });
 };

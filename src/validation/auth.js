@@ -24,3 +24,7 @@ export const loginUserSchema = Joi.object({
     'string.empty': 'Password cannot be empty',
   }),
 });
+
+export const loginWithGoogleOAuthSchema = Joi.object({
+  code: Joi.string().required(),
+});

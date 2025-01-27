@@ -4,6 +4,7 @@ import { accessTokenLifetime, refreshTokenLifetime } from '../constants/index.js
 import UserCollection from '../db/models/User.js';
 import createHttpError from 'http-errors';
 import SessionCollection from '../db/models/Session.js';
+import { getFullNameFromGoogleTokenPayload, validateCode } from '../utils/googleOAuth2.js';
 
 const createSession = () => {
   const accessToken = randomBytes(30).toString('base64');
@@ -59,6 +60,34 @@ export const refreshUserSession = async ({ sessionId, refreshToken }) => {
   const newSession = createSession();
   return SessionCollection.create({ userId: session.userId, ...newSession });
 };
+
+export const loginOrSignupWithGoogle = async (code) => {
+  const loginTicket = await validateCode(code);
+  const payload = loginTicket.getPayload();
+  if (!payload) {
+    throw createHttpError(401);
+  }
+  let user = await UserCollection.findOne({ email: payload.email });
+  if (!user) {
+    const password = await bcrypt.hash(payload.sub, 10);
+    const username = getFullNameFromGoogleTokenPayload(payload);
+
+    user = UserCollection.create({
+      email: payload.email,
+
+      password,
+      avatar_url: payload.picture || '',
+      name: username,
+      balance: 0,
+    });
+  } else if (payload.picture && !user.avatar_url) {
+    await UserCollection.findByIdAndUpdate(user._id, { avatar_url: payload.picture });
+    user.avatar_url = payload.picture;
+  }
+  const newSession = createSession();
+  return await SessionCollection.create({ userId: user._id, ...newSession });
+};
+
 export const findSession = async (filter) => {
   try {
     const session = await SessionCollection.findOne(filter);
