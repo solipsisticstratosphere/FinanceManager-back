@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { addTransaction, getTransactions } from '../services/transactions.js';
 import { transactionValidationSchema } from '../validation/transaction.js';
 
