@@ -16,10 +16,14 @@ export const addTransactionController = async (req, res, next) => {
       });
     }
 
-    // Process transaction
+    console.log('Received transaction request:', {
+      body: req.body,
+      userId: req.user?._id,
+    });
+
+    console.log('Validation passed, processing transaction');
     const result = await addTransaction({ ...value, userId });
 
-    // Format successful response
     const response = {
       status: 'success',
       message: 'Transaction added successfully',
@@ -35,17 +39,16 @@ export const addTransactionController = async (req, res, next) => {
       },
     };
 
-    // Add goal information if relevant
-    if (result.goalAchieved) {
-      response.data.goal = {
-        achieved: true,
-        goalData: result.updatedGoal,
-      };
-    }
-
+    console.log('Transaction completed successfully:', response);
     return res.status(201).json(response);
   } catch (error) {
-    console.error('Transaction error:', error);
+    console.error('Controller error:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      body: req.body,
+      userId: req.user?._id,
+    });
 
     // Handle specific known errors
     if (error instanceof mongoose.Error.ValidationError) {
@@ -65,7 +68,6 @@ export const addTransactionController = async (req, res, next) => {
       });
     }
 
-    // Handle http-errors
     if (error.statusCode) {
       return res.status(error.statusCode).json({
         status: 'error',
@@ -79,6 +81,7 @@ export const addTransactionController = async (req, res, next) => {
       status: 'error',
       message: 'Internal server error',
       data: null,
+      errorDetails: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 };
