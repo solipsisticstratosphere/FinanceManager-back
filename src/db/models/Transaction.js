@@ -25,6 +25,16 @@ const transactionSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    monoId: {
+      type: String,
+      index: true,
+      sparse: true,
+    },
+    source: {
+      type: String,
+      enum: ['manual', 'monobank'],
+      default: 'manual',
+    },
   },
   { versionKey: false, timestamps: true },
 );
