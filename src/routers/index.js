@@ -15,5 +15,5 @@ router.use('/balance', balanceRouter);
 router.use('/transactions', transactionsRouter);
 router.use('/goal', goalRouter);
 router.use('/forecasts', forecastRouter);
-app.use('/api/monobank', monobankRouter);
+router.use('/api/monobank', monobankRouter);
 export default router;
