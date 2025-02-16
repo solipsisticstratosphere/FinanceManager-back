@@ -15,6 +15,24 @@ const MONOBANK_API_URL = 'https://api.monobank.ua';
 // Функция для подключения Монобанка (сохранение токена)
 export const connectMonobank = async (userId, token) => {
   try {
+    // Проверяем, не используется ли токен другим пользователем
+    const existingToken = await MonobankToken.findOne({
+      userId: { $ne: userId }, // Ищем у других пользователей
+    });
+
+    if (existingToken) {
+      // Расшифровываем существующий токен для сравнения
+      const existingDecryptedToken = MonobankToken.decryptToken(existingToken.encryptedToken, existingToken.iv);
+
+      // Если токены совпадают - возвращаем ошибку
+      if (existingDecryptedToken === token) {
+        throw new createHttpError(
+          409,
+          'Этот токен Монобанка уже используется другим пользователем. Пожалуйста, используйте другой токен.',
+        );
+      }
+    }
+
     // Проверяем валидность токена, запрашивая информацию о клиенте
     const clientInfo = await getMonobankClientInfo(token);
 
@@ -61,7 +79,7 @@ export const connectMonobank = async (userId, token) => {
         error.response.data?.errorDescription || 'Ошибка при подключении к Монобанку',
       );
     }
-    throw new createHttpError(500, 'Ошибка при подключении к Монобанку');
+    throw error; // Пробрасываем ошибки createHttpError как есть
   }
 };
 
