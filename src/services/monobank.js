@@ -88,7 +88,18 @@ export const syncMonobankTransactions = async (userId) => {
     // Расшифровываем токен
     const token = MonobankToken.decryptToken(tokenRecord.encryptedToken, tokenRecord.iv);
 
-    // Определяем период для синхронизации (последние 30 дней или с момента последней синхронизации)
+    // Получаем актуальную информацию о клиенте, включая счета с текущими балансами
+    const clientInfo = await getMonobankClientInfo(token);
+
+    // Обновляем информацию о счетах
+    const updatedAccounts = clientInfo.accounts.map((account) => ({
+      id: account.id,
+      name: account.maskedPan.length ? account.maskedPan[0] : 'Счет',
+      balance: account.balance / 100,
+      currencyCode: account.currencyCode,
+    }));
+
+    // Определяем период для синхронизации транзакций
     const currentTime = Math.floor(Date.now() / 1000);
     let fromTime;
 
@@ -131,18 +142,6 @@ export const syncMonobankTransactions = async (userId) => {
       allTransactions.push(...formattedTransactions);
     }
 
-    // Если нет новых транзакций, просто обновляем время синхронизации
-    if (allTransactions.length === 0) {
-      await MonobankToken.findByIdAndUpdate(tokenRecord._id, {
-        lastSync: new Date(),
-      });
-
-      return {
-        transactionsCount: 0,
-        lastSync: new Date(),
-      };
-    }
-
     // Запускаем транзакцию в MongoDB для атомарного обновления данных
     const isTransactionSupported = await checkTransactionSupport();
     if (isTransactionSupported) {
@@ -150,11 +149,18 @@ export const syncMonobankTransactions = async (userId) => {
       session.startTransaction();
     }
 
-    // Сохраняем транзакции и обновляем баланс
+    // Сохраняем транзакции
     const savedTransactions = await saveMonobankTransactions(allTransactions, userId, session);
 
-    // Обновляем время последней синхронизации
-    await MonobankToken.findByIdAndUpdate(tokenRecord._id, { lastSync: new Date() }, session ? { session } : undefined);
+    // Обновляем время последней синхронизации и информацию о счетах
+    await MonobankToken.findByIdAndUpdate(
+      tokenRecord._id,
+      {
+        lastSync: new Date(),
+        accounts: updatedAccounts,
+      },
+      session ? { session } : undefined,
+    );
 
     if (session) {
       await session.commitTransaction();
@@ -163,6 +169,7 @@ export const syncMonobankTransactions = async (userId) => {
     return {
       transactionsCount: savedTransactions.length,
       lastSync: new Date(),
+      accounts: updatedAccounts,
     };
   } catch (error) {
     if (session) {

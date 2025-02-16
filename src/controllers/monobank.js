@@ -47,6 +47,7 @@ export const syncMonobankTransactionsController = async (req, res) => {
     data: {
       transactionsCount: result.transactionsCount,
       lastSync: result.lastSync,
+      accounts: result.accounts, // Добавляем счета в ответ
     },
   });
 };
