@@ -1,5 +1,24 @@
 import mongoose from 'mongoose';
 
+// Define the risk factor schema separately
+const riskFactorSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      required: true,
+    },
+    severity: {
+      type: Number,
+      default: 50,
+    },
+    description: {
+      type: String,
+      default: 'Risk factor',
+    },
+  },
+  { _id: false }, // Don't create _id for subdocuments
+);
+
 const forecastSchema = new mongoose.Schema(
   {
     userId: {
@@ -38,13 +57,7 @@ const forecastSchema = new mongoose.Schema(
       monthlySavings: Number,
       savingsVariability: Number,
       probability: Number,
-      riskFactors: [
-        {
-          type: String,
-          severity: Number,
-          description: String,
-        },
-      ],
+      riskFactors: [riskFactorSchema],
     },
     lastUpdated: {
       type: Date,

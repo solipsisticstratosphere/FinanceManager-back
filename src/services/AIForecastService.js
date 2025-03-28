@@ -587,7 +587,14 @@ class AdvancedAIForecastService {
   async updateForecasts(userId, session = null) {
     try {
       const budgetForecasts = await this.predictFinancialForecast(userId);
-      const goalForecast = await this._calculateEnhancedGoalForecast(userId);
+
+      let goalForecast = null;
+      try {
+        goalForecast = await this._calculateEnhancedGoalForecast(userId);
+      } catch (goalError) {
+        console.error('Error calculating goal forecast:', goalError);
+        // Continue without goal forecast if there's an error
+      }
 
       // Validate data before saving to database
       const validatedForecasts = this._validateForecastData(budgetForecasts);
@@ -611,7 +618,7 @@ class AdvancedAIForecastService {
     } catch (error) {
       console.error('Error in updateForecasts:', error);
       // Return default forecast in case of error
-      const defaultForecasts = this._generateDefaultForecast();
+      const defaultForecasts = this._generateVariedDefaultForecast();
       const updateOperation = {
         budgetForecasts: defaultForecasts,
         goalForecast: null,
@@ -677,39 +684,58 @@ class AdvancedAIForecastService {
   _validateGoalForecastData(goalForecast) {
     if (!goalForecast) return null;
 
-    // Validate numeric values
-    const safeExpectedMonths = isNaN(goalForecast.expectedMonthsToGoal) ? 12 : goalForecast.expectedMonthsToGoal;
-    const safeBestCaseMonths = isNaN(goalForecast.bestCaseMonthsToGoal) ? 6 : goalForecast.bestCaseMonthsToGoal;
-    const safeWorstCaseMonths = isNaN(goalForecast.worstCaseMonthsToGoal) ? 24 : goalForecast.worstCaseMonthsToGoal;
-    const safeMonthlySavings = isNaN(goalForecast.monthlySavings) ? 100 : goalForecast.monthlySavings;
-    const safeVariability = isNaN(goalForecast.savingsVariability) ? 50 : goalForecast.savingsVariability;
-    const safeProbability = isNaN(goalForecast.probability) ? 50 : goalForecast.probability;
+    try {
+      // Validate numeric values
+      const safeExpectedMonths = isNaN(goalForecast.expectedMonthsToGoal) ? 12 : goalForecast.expectedMonthsToGoal;
+      const safeBestCaseMonths = isNaN(goalForecast.bestCaseMonthsToGoal) ? 6 : goalForecast.bestCaseMonthsToGoal;
+      const safeWorstCaseMonths = isNaN(goalForecast.worstCaseMonthsToGoal) ? 24 : goalForecast.worstCaseMonthsToGoal;
+      const safeMonthlySavings = isNaN(goalForecast.monthlySavings) ? 100 : goalForecast.monthlySavings;
+      const safeVariability = isNaN(goalForecast.savingsVariability) ? 50 : goalForecast.savingsVariability;
+      const safeProbability = isNaN(goalForecast.probability) ? 50 : goalForecast.probability;
 
-    // Ensure risk factors are valid
-    const safeRiskFactors = [];
-    if (goalForecast.riskFactors && Array.isArray(goalForecast.riskFactors)) {
-      goalForecast.riskFactors.forEach((risk) => {
-        if (risk && risk.type) {
-          safeRiskFactors.push({
-            type: risk.type,
-            severity: isNaN(risk.severity) ? 50 : risk.severity,
-            description: risk.description || 'Risk factor',
-          });
-        }
-      });
+      // Ensure risk factors are valid
+      let safeRiskFactors = [];
+
+      if (goalForecast.riskFactors && Array.isArray(goalForecast.riskFactors)) {
+        safeRiskFactors = goalForecast.riskFactors
+          .map((risk) => {
+            if (!risk || typeof risk !== 'object') return null;
+
+            return {
+              type: typeof risk.type === 'string' ? risk.type : 'unknown_risk',
+              severity: !isNaN(risk.severity) ? Math.round(risk.severity) : 50,
+              description: typeof risk.description === 'string' ? risk.description : 'Risk factor',
+            };
+          })
+          .filter((risk) => risk !== null);
+      }
+
+      return {
+        goalId: goalForecast.goalId,
+        expectedMonthsToGoal: Math.round(safeExpectedMonths),
+        bestCaseMonthsToGoal: Math.round(safeBestCaseMonths),
+        worstCaseMonthsToGoal: Math.round(Math.min(120, safeWorstCaseMonths)), // Cap at 10 years for UI
+        projectedDate: goalForecast.projectedDate || addMonths(new Date(), safeExpectedMonths),
+        monthlySavings: Math.round(safeMonthlySavings * 100) / 100, // Round to 2 decimal places
+        savingsVariability: Math.round(safeVariability * 100) / 100,
+        probability: Math.round(safeProbability),
+        riskFactors: safeRiskFactors,
+      };
+    } catch (error) {
+      console.error('Error in _validateGoalForecastData:', error);
+      // Return safe defaults
+      return {
+        goalId: goalForecast.goalId,
+        expectedMonthsToGoal: 12,
+        bestCaseMonthsToGoal: 6,
+        worstCaseMonthsToGoal: 24,
+        projectedDate: addMonths(new Date(), 12),
+        monthlySavings: 100,
+        savingsVariability: 50,
+        probability: 50,
+        riskFactors: [],
+      };
     }
-
-    return {
-      goalId: goalForecast.goalId,
-      expectedMonthsToGoal: safeExpectedMonths,
-      bestCaseMonthsToGoal: safeBestCaseMonths,
-      worstCaseMonthsToGoal: safeWorstCaseMonths,
-      projectedDate: goalForecast.projectedDate || addMonths(new Date(), safeExpectedMonths),
-      monthlySavings: safeMonthlySavings,
-      savingsVariability: safeVariability,
-      probability: safeProbability,
-      riskFactors: safeRiskFactors,
-    };
   }
 
   _calculateOverallConfidence(forecasts) {
@@ -723,178 +749,216 @@ class AdvancedAIForecastService {
   }
 
   async _calculateEnhancedGoalForecast(userId) {
-    const cacheKey = `goal_${userId}`;
-    const cached = this.goalCalculationCache.get(cacheKey);
+    try {
+      const cacheKey = `goal_${userId}`;
+      const cached = this.goalCalculationCache.get(cacheKey);
 
-    if (cached && Date.now() - cached.timestamp < this.MODEL_CACHE_DURATION) {
-      return cached.data;
-    }
+      if (cached && Date.now() - cached.timestamp < this.MODEL_CACHE_DURATION) {
+        return cached.data;
+      }
 
-    const activeGoal = await GoalCollection.findOne({
-      userId,
-      isActive: true,
-    });
+      const activeGoal = await GoalCollection.findOne({
+        userId,
+        isActive: true,
+      });
 
-    if (!activeGoal) return null;
+      if (!activeGoal) return null;
 
-    // Get more historical data for better analysis - 6 months instead of 3
-    const transactions = await TransactionCollection.find({
-      userId,
-      date: { $gte: addMonths(new Date(), -6) },
-    });
+      // Get more historical data for better analysis - 6 months instead of 3
+      const transactions = await TransactionCollection.find({
+        userId,
+        date: { $gte: addMonths(new Date(), -6) },
+      });
 
-    // Calculate monthly savings with trend detection
-    const monthlySavingsData = [];
-    for (let i = 0; i < 6; i++) {
-      const monthStart = addMonths(new Date(), -i - 1);
-      const monthEnd = addMonths(new Date(), -i);
+      if (!transactions || transactions.length === 0) {
+        // Not enough data to make a meaningful forecast
+        return {
+          goalId: activeGoal._id,
+          expectedMonthsToGoal: 12,
+          bestCaseMonthsToGoal: 6,
+          worstCaseMonthsToGoal: 24,
+          projectedDate: addMonths(new Date(), 12),
+          monthlySavings: 100,
+          savingsVariability: 0,
+          probability: 50,
+          riskFactors: [],
+        };
+      }
 
-      const monthTransactions = transactions.filter((t) => t.date >= monthStart && t.date < monthEnd);
+      // Calculate monthly savings with trend detection
+      const monthlySavingsData = [];
+      for (let i = 0; i < 6; i++) {
+        const monthStart = addMonths(new Date(), -i - 1);
+        const monthEnd = addMonths(new Date(), -i);
 
-      const monthlySaving = monthTransactions.reduce(
-        (acc, t) => (t.type === 'income' ? acc + t.amount : acc - t.amount),
-        0,
+        const monthTransactions = transactions.filter((t) => t.date >= monthStart && t.date < monthEnd);
+
+        const monthlySaving = monthTransactions.reduce(
+          (acc, t) => (t.type === 'income' ? acc + t.amount : acc - t.amount),
+          0,
+        );
+
+        monthlySavingsData.push(monthlySaving);
+      }
+
+      // Calculate weighted average with more emphasis on recent months
+      let weightedSavings = 0;
+      let weightSum = 0;
+
+      for (let i = 0; i < monthlySavingsData.length; i++) {
+        const weight = Math.exp(-0.4 * i); // Exponential decay weight
+        weightedSavings += monthlySavingsData[i] * weight;
+        weightSum += weight;
+      }
+
+      const avgMonthlySavings = weightSum > 0 ? weightedSavings / weightSum : 0;
+
+      // Calculate savings variability for risk assessment
+      const savingsVariability = this._calculateVariability(monthlySavingsData);
+
+      const remaining = activeGoal.targetAmount - activeGoal.currentAmount;
+
+      // Ensure we have positive values for calculations
+      const safeMonthlySavings = Math.max(1, avgMonthlySavings);
+
+      // Project with variance consideration
+      const optimisticSavings = Math.max(safeMonthlySavings, safeMonthlySavings + savingsVariability);
+      const pessimisticSavings = Math.max(1, safeMonthlySavings - savingsVariability);
+
+      const bestCaseMonths = Math.max(1, Math.ceil(remaining / optimisticSavings));
+      const worstCaseMonths =
+        remaining > 0 ? Math.ceil(remaining / Math.max(1, pessimisticSavings)) : Number.POSITIVE_INFINITY;
+
+      const expectedMonths = Math.max(1, Math.ceil(remaining / Math.max(1, safeMonthlySavings)));
+      const projectedDate = addMonths(new Date(), expectedMonths);
+
+      // Calculate probability with more factors
+      const probability = this._calculateEnhancedGoalProbability(
+        Math.abs(safeMonthlySavings),
+        remaining,
+        activeGoal.targetAmount,
+        savingsVariability,
+        monthlySavingsData,
       );
 
-      monthlySavingsData.push(monthlySaving);
+      const goalForecast = {
+        goalId: activeGoal._id,
+        expectedMonthsToGoal: expectedMonths,
+        bestCaseMonthsToGoal: bestCaseMonths,
+        worstCaseMonthsToGoal: Math.min(120, worstCaseMonths), // Cap at 10 years for UI
+        projectedDate,
+        monthlySavings: Math.abs(safeMonthlySavings),
+        savingsVariability,
+        probability,
+        riskFactors: this._assessGoalRiskFactors(safeMonthlySavings, savingsVariability, remaining, monthlySavingsData),
+      };
+
+      this.goalCalculationCache.set(cacheKey, {
+        data: goalForecast,
+        timestamp: Date.now(),
+      });
+
+      return goalForecast;
+    } catch (error) {
+      console.error('Error in _calculateEnhancedGoalForecast:', error);
+      throw error; // Propagate error to be handled in updateForecasts
     }
-
-    // Calculate weighted average with more emphasis on recent months
-    let weightedSavings = 0;
-    let weightSum = 0;
-
-    for (let i = 0; i < monthlySavingsData.length; i++) {
-      const weight = Math.exp(-0.4 * i); // Exponential decay weight
-      weightedSavings += monthlySavingsData[i] * weight;
-      weightSum += weight;
-    }
-
-    const avgMonthlySavings = weightSum > 0 ? weightedSavings / weightSum : 0;
-
-    // Calculate savings variability for risk assessment
-    const savingsVariability = this._calculateVariability(monthlySavingsData);
-
-    const remaining = activeGoal.targetAmount - activeGoal.currentAmount;
-
-    // Project with variance consideration
-    const optimisticSavings = Math.max(avgMonthlySavings, avgMonthlySavings + savingsVariability);
-    const pessimisticSavings = Math.max(1, avgMonthlySavings - savingsVariability);
-
-    const bestCaseMonths = Math.max(1, Math.ceil(remaining / optimisticSavings));
-    const worstCaseMonths =
-      remaining > 0 && pessimisticSavings > 0 ? Math.ceil(remaining / pessimisticSavings) : Number.POSITIVE_INFINITY;
-
-    const expectedMonths = Math.max(1, Math.ceil(remaining / Math.abs(avgMonthlySavings || 1)));
-    const projectedDate = addMonths(new Date(), expectedMonths);
-
-    // Calculate probability with more factors
-    const probability = this._calculateEnhancedGoalProbability(
-      Math.abs(avgMonthlySavings),
-      remaining,
-      activeGoal.targetAmount,
-      savingsVariability,
-      monthlySavingsData,
-    );
-
-    const goalForecast = {
-      goalId: activeGoal._id,
-      expectedMonthsToGoal: expectedMonths,
-      bestCaseMonthsToGoal: bestCaseMonths,
-      worstCaseMonthsToGoal: Math.min(120, worstCaseMonths), // Cap at 10 years for UI
-      projectedDate,
-      monthlySavings: Math.abs(avgMonthlySavings),
-      savingsVariability,
-      probability,
-      riskFactors: this._assessGoalRiskFactors(avgMonthlySavings, savingsVariability, remaining, monthlySavingsData),
-    };
-
-    this.goalCalculationCache.set(cacheKey, {
-      data: goalForecast,
-      timestamp: Date.now(),
-    });
-
-    return goalForecast;
   }
 
   _calculateEnhancedGoalProbability(monthlySavings, remaining, targetAmount, variability, historicalSavings) {
-    if (remaining <= 0) return 100; // Already achieved
-    if (monthlySavings <= 0) return 0; // No savings
+    try {
+      if (remaining <= 0) return 100; // Already achieved
+      if (monthlySavings <= 0) return 0; // No savings
 
-    // Base achievement factor
-    const achievementFactor = monthlySavings / (remaining || 1);
+      // Base achievement factor
+      const achievementFactor = monthlySavings / (remaining || 1);
 
-    // Penalty for high variability
-    const variabilityFactor = Math.min(1, 1 - (variability / (monthlySavings || 1)) * 0.5);
+      // Penalty for high variability
+      const variabilityFactor = Math.min(1, 1 - (variability / (monthlySavings || 1)) * 0.5);
 
-    // Trend analysis - are savings increasing or decreasing?
-    let trendFactor = 0;
-    if (historicalSavings.length >= 3) {
-      const recentAvg = historicalSavings.slice(0, 3).reduce((a, b) => a + b, 0) / 3;
-      const olderAvg =
-        historicalSavings.slice(3).reduce((a, b) => a + b, 0) / Math.max(1, historicalSavings.slice(3).length);
+      // Trend analysis - are savings increasing or decreasing?
+      let trendFactor = 0;
+      if (historicalSavings && historicalSavings.length >= 3) {
+        const recentAvg = historicalSavings.slice(0, 3).reduce((a, b) => a + b, 0) / 3;
+        const olderAvg =
+          historicalSavings.slice(3).reduce((a, b) => a + b, 0) / Math.max(1, historicalSavings.slice(3).length);
 
-      trendFactor = recentAvg > olderAvg ? 0.2 : -0.1; // Bonus for improving trend
+        trendFactor = recentAvg > olderAvg ? 0.2 : -0.1; // Bonus for improving trend
+      }
+
+      // Scale based on how ambitious the goal is compared to monthly savings
+      const ambitiousFactor = Math.min(1, monthlySavings / (targetAmount * 0.1 || 1));
+
+      // Combine all factors
+      const probabilityScore =
+        achievementFactor * 50 * variabilityFactor * (1 + trendFactor) * Math.sqrt(ambitiousFactor);
+
+      // Round the result to avoid unnecessary precision issues
+      return Math.min(Math.max(Math.round(probabilityScore), 0), 100);
+    } catch (error) {
+      console.error('Error in _calculateEnhancedGoalProbability:', error);
+      // Return a reasonable default based on achievement factor
+      const basicProbability = Math.min(Math.max(Math.round((monthlySavings / (remaining || 1)) * 50), 0), 100);
+      return basicProbability || 50;
     }
-
-    // Scale based on how ambitious the goal is compared to monthly savings
-    const ambitiousFactor = Math.min(1, monthlySavings / (targetAmount * 0.1));
-
-    // Combine all factors
-    const probabilityScore =
-      achievementFactor * 50 * variabilityFactor * (1 + trendFactor) * Math.sqrt(ambitiousFactor);
-
-    return Math.min(Math.max(probabilityScore, 0), 100);
   }
 
   _assessGoalRiskFactors(monthlySavings, variability, remaining, historicalSavings) {
-    const risks = [];
+    try {
+      const risks = [];
 
-    // Assess savings consistency
-    const variabilityRatio = variability / (monthlySavings || 1);
-    if (variabilityRatio > 0.5) {
-      risks.push({
-        type: 'high_variability',
-        severity: Math.min(100, variabilityRatio * 100),
-        description: 'Your savings rate is highly variable',
-      });
-    }
-
-    // Assess negative trend
-    if (historicalSavings.length >= 4) {
-      const recentAvg = historicalSavings.slice(0, 2).reduce((a, b) => a + b, 0) / 2;
-      const olderAvg = historicalSavings.slice(2, 4).reduce((a, b) => a + b, 0) / 2;
-
-      if (recentAvg < olderAvg) {
-        const trendSeverity = Math.min(100, ((olderAvg - recentAvg) / (olderAvg || 1)) * 100);
+      // Assess savings consistency
+      const variabilityRatio = variability / (monthlySavings || 1);
+      if (variabilityRatio > 0.5) {
         risks.push({
-          type: 'declining_savings',
-          severity: trendSeverity,
-          description: 'Your recent savings rate is declining',
+          type: 'high_variability',
+          severity: Math.min(100, Math.round(variabilityRatio * 100)),
+          description: 'Your savings rate is highly variable',
         });
       }
-    }
 
-    // Assess if goal is too ambitious
-    const monthsRequired = remaining / (monthlySavings || 1);
-    if (monthsRequired > 36) {
-      risks.push({
-        type: 'ambitious_timeline',
-        severity: Math.min(100, (monthsRequired - 36) * 2),
-        description: 'Your goal may take a long time to achieve',
-      });
-    }
+      // Assess negative trend
+      if (historicalSavings && historicalSavings.length >= 4) {
+        const recentAvg = historicalSavings.slice(0, 2).reduce((a, b) => a + b, 0) / 2;
+        const olderAvg = historicalSavings.slice(2, 4).reduce((a, b) => a + b, 0) / 2;
 
-    // Assess negative months
-    const negativeMonths = historicalSavings.filter((s) => s < 0).length;
-    if (negativeMonths > 0) {
-      risks.push({
-        type: 'negative_months',
-        severity: Math.min(100, (negativeMonths / historicalSavings.length) * 100),
-        description: 'You had months with negative savings',
-      });
-    }
+        if (recentAvg < olderAvg) {
+          const trendSeverity = Math.min(100, Math.round(((olderAvg - recentAvg) / (olderAvg || 1)) * 100));
+          risks.push({
+            type: 'declining_savings',
+            severity: trendSeverity,
+            description: 'Your recent savings rate is declining',
+          });
+        }
+      }
 
-    return risks;
+      // Assess if goal is too ambitious
+      const monthsRequired = remaining / (monthlySavings || 1);
+      if (monthsRequired > 36) {
+        risks.push({
+          type: 'ambitious_timeline',
+          severity: Math.min(100, Math.round((monthsRequired - 36) * 2)),
+          description: 'Your goal may take a long time to achieve',
+        });
+      }
+
+      // Assess negative months
+      if (historicalSavings && historicalSavings.length > 0) {
+        const negativeMonths = historicalSavings.filter((s) => s < 0).length;
+        if (negativeMonths > 0) {
+          risks.push({
+            type: 'negative_months',
+            severity: Math.min(100, Math.round((negativeMonths / historicalSavings.length) * 100)),
+            description: 'You had months with negative savings',
+          });
+        }
+      }
+
+      return risks;
+    } catch (error) {
+      console.error('Error in _assessGoalRiskFactors:', error);
+      return [];
+    }
   }
 
   _calculateGoalVariabilityRisk(transactions) {
