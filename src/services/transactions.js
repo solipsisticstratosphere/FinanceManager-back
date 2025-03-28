@@ -4,6 +4,7 @@ import createHttpError from 'http-errors';
 import { TransactionCollection } from '../db/models/Transaction.js';
 import { updateGoalProgress } from './goal.js';
 import { updateForecasts } from './forecast.js';
+import UserService from './UserService.js';
 
 export const addTransaction = async (transactionData) => {
   let session = null;
@@ -25,6 +26,10 @@ export const addTransaction = async (transactionData) => {
     const result = await processWithTransaction(transactionData, session);
     await session.commitTransaction();
     console.log('Transaction committed successfully');
+
+    // After transaction is committed, update the user's average monthly income and expense
+    // This is done outside the transaction to avoid lock contention
+    await UserService.updateUserAverages(transactionData.userId);
 
     return result;
   } catch (error) {
@@ -89,6 +94,9 @@ const processWithoutTransaction = async (transactionData) => {
       { new: true }, // Return updated document
     );
 
+    // Update user's average monthly income and expense
+    await UserService.updateUserAverages(transactionData.userId);
+
     console.log('Transaction processed successfully');
     return { transaction };
   } catch (error) {
@@ -103,37 +111,58 @@ const processWithoutTransaction = async (transactionData) => {
 };
 
 const processWithTransaction = async (transactionData, session) => {
-  const user = await UserCollection.findById(transactionData.userId).session(session);
-  if (!user) {
-    throw new createHttpError(404, 'User not found');
+  try {
+    console.log('Finding user with session:', transactionData.userId);
+    const user = await UserCollection.findById(transactionData.userId).session(session);
+
+    if (!user) {
+      console.log('User not found:', transactionData.userId);
+      throw new createHttpError(404, 'User not found');
+    }
+
+    const amount = Number(transactionData.amount);
+    console.log('Checking balance:', { userBalance: user.balance, amount });
+
+    if (transactionData.type === 'expense' && user.balance < amount) {
+      throw new createHttpError(400, 'Not enough balance');
+    }
+
+    console.log('Creating transaction document with session');
+    const transaction = await TransactionCollection.create([transactionData], { session });
+
+    const balanceChange = transactionData.type === 'income' ? amount : -amount;
+    console.log('Updating user balance with session:', { balanceChange });
+
+    await UserCollection.findByIdAndUpdate(
+      transactionData.userId,
+      {
+        $inc: { balance: balanceChange },
+        lastBalanceUpdate: new Date(),
+      },
+      { new: true, session }, // Return updated document
+    );
+
+    // Update goals if they exist
+    const goalUpdate = await updateGoalProgress(transactionData, session);
+
+    // Update forecasts
+    await updateForecasts(transactionData.userId, session);
+
+    console.log('Transaction processed successfully with session');
+    return {
+      transaction: transaction[0],
+      goalAchieved: goalUpdate?.isAchieved || false,
+      updatedGoal: goalUpdate?.goal,
+    };
+  } catch (error) {
+    console.error('Process with transaction error:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      data: transactionData,
+    });
+    throw error;
   }
-
-  const amount = Number(transactionData.amount);
-  if (transactionData.type === 'expense' && user.balance < amount) {
-    throw new createHttpError(400, 'Not enough balance');
-  }
-
-  const transaction = await TransactionCollection.create([transactionData], { session });
-  const balanceChange = transactionData.type === 'income' ? amount : -amount;
-
-  await UserCollection.findByIdAndUpdate(
-    transactionData.userId,
-    {
-      $inc: { balance: balanceChange },
-      lastBalanceUpdate: new Date(),
-    },
-    { session },
-  );
-
-  // Важно: передаем сессию во все операции внутри транзакции
-  const goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange, session);
-  await updateForecasts(transactionData.userId, session); // Добавляем session параметр
-
-  return {
-    transaction: transaction[0],
-    goalAchieved: goalUpdate?.isAchieved || false,
-    updatedGoal: goalUpdate?.goal,
-  };
 };
 
 export const getTransactions = async (userId) => {
