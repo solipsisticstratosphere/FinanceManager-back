@@ -97,6 +97,16 @@ const detailsSchema = new mongoose.Schema(
         average: Number,
       },
     },
+    last30Days: {
+      dailyExpense: Number,
+      dailyIncome: Number,
+      monthlyProjectedExpense: Number,
+      monthlyProjectedIncome: Number,
+      transactionCount: Number,
+      expenseCategories: [String],
+      incomeCategories: [String],
+      netBalance: Number,
+    },
   },
   { _id: false, strict: false },
 );

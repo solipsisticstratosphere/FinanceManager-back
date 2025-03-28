@@ -131,19 +131,23 @@ class AdvancedAIForecastService {
       return cachedForecast.data;
     }
 
-    const data = await this.prepareForecastData(userId);
+    // Get historical data for pattern analysis (24 months)
+    const historicalData = await this.prepareForecastData(userId, 24);
+
+    // Get recent data for current expense/income levels (last 30 days)
+    const last30DaysData = await this.prepareRecentTransactionData(userId, 30);
 
     // Early return with default safe values if we don't have sufficient data
-    if (!data.expenses || data.expenses.length === 0) {
+    if (!historicalData.expenses || historicalData.expenses.length === 0) {
       return this._createDefaultForecast(12);
     }
 
-    let useNeuralModel = data.expenses.length >= 12;
+    let useNeuralModel = historicalData.expenses.length >= 12;
     let modelPredictions = null;
 
     if (useNeuralModel) {
       try {
-        modelPredictions = await this._getModelPredictions(data, userId);
+        modelPredictions = await this._getModelPredictions(historicalData, userId);
       } catch (err) {
         console.error('Neural model prediction failed, falling back to statistical methods:', err);
         useNeuralModel = false;
@@ -167,17 +171,21 @@ class AdvancedAIForecastService {
         predictedExpense = modelPredictions.expenses[i] || 0;
         predictedIncome = modelPredictions.incomes[i] || 0;
       } else {
-        predictedExpense = this._enhancedStatisticalPrediction(
-          data.expenses,
-          data.categories,
+        // Use last 30 days as base for expense/income, but use patterns from historical data
+        predictedExpense = this._calculateRecentBasedPrediction(
+          last30DaysData.totalExpense,
+          historicalData.expenses,
+          historicalData.categories,
           monthIndex,
-          data.trendsData,
+          historicalData.trendsData,
         );
-        predictedIncome = this._enhancedStatisticalPrediction(
-          data.incomes,
-          data.categories,
+
+        predictedIncome = this._calculateRecentBasedPrediction(
+          last30DaysData.totalIncome,
+          historicalData.incomes,
+          historicalData.categories,
           monthIndex,
-          data.trendsData,
+          historicalData.trendsData,
         );
       }
 
@@ -185,13 +193,16 @@ class AdvancedAIForecastService {
       predictedExpense = isNaN(predictedExpense) ? 0 : predictedExpense;
       predictedIncome = isNaN(predictedIncome) ? 0 : predictedIncome;
 
-      const seasonalityFactor = this._calculateSeasonalityFactor(data.expenses, monthIndex);
-      let trendFactor = this._calculateTrendFactor(data.expenses);
+      const seasonalityFactor = this._calculateSeasonalityFactor(historicalData.expenses, monthIndex);
+      let trendFactor = this._calculateTrendFactor(historicalData.expenses);
 
       // Handle potential Infinity values
       trendFactor = !isFinite(trendFactor) ? 0 : trendFactor;
 
-      const categoryAdjustment = this._calculateCategoryBasedAdjustment(data.processedTransactions, monthIndex);
+      const categoryAdjustment = this._calculateCategoryBasedAdjustment(
+        historicalData.processedTransactions,
+        monthIndex,
+      );
       const economicAdjustment = this._simulateEconomicIndicatorsAdjustment(i);
 
       // Ensure all factors are valid numbers
@@ -216,8 +227,8 @@ class AdvancedAIForecastService {
       // Calculate the net balance (can be negative)
       const projectedBalance = safeIncome - safeExpense;
 
-      const confIntervals = this._calculateConfidenceInterval(safeExpense, data.expenses);
-      const confIntervalsIncome = this._calculateConfidenceInterval(safeIncome, data.incomes);
+      const confIntervals = this._calculateConfidenceInterval(safeExpense, historicalData.expenses);
+      const confIntervalsIncome = this._calculateConfidenceInterval(safeIncome, historicalData.incomes);
 
       // Ensure confidence intervals have valid values
       const safeConfidenceIntervals = {
@@ -231,7 +242,7 @@ class AdvancedAIForecastService {
         },
       };
 
-      const riskAssessment = this._calculateEnhancedRiskScore(safeExpense, safeIncome, data.trendsData);
+      const riskAssessment = this._calculateEnhancedRiskScore(safeExpense, safeIncome, historicalData.trendsData);
       const safeRiskAssessment = isNaN(riskAssessment) ? 50 : riskAssessment;
 
       return {
@@ -577,7 +588,11 @@ class AdvancedAIForecastService {
     };
 
     if (detailed) {
+      // Get historical data for patterns and trends
       const historicalData = await this.prepareForecastData(userId, 24);
+
+      // Get recent data (last 30 days)
+      const recentData = await this.prepareRecentTransactionData(userId, 30);
 
       forecastData.details = {
         historicalExpenses: historicalData.expenses,
@@ -586,6 +601,16 @@ class AdvancedAIForecastService {
         categoryDistribution: this._calculateCategoryDistribution(historicalData.processedTransactions),
         volatilityMetrics: this._calculateVolatilityMetrics(historicalData.trendsData),
         seasonalPatterns: this._identifySeasonalPatterns(historicalData.expenses, historicalData.incomes),
+        last30Days: {
+          dailyExpense: recentData.dailyExpense || 0,
+          dailyIncome: recentData.dailyIncome || 0,
+          monthlyProjectedExpense: recentData.totalExpense || 0,
+          monthlyProjectedIncome: recentData.totalIncome || 0,
+          transactionCount: recentData.transactionCount || 0,
+          expenseCategories: recentData.expenseCategories || [],
+          incomeCategories: recentData.incomeCategories || [],
+          netBalance: (recentData.totalIncome || 0) - (recentData.totalExpense || 0),
+        },
       };
     }
 
@@ -714,125 +739,160 @@ class AdvancedAIForecastService {
 
       if (!activeGoal) return null;
 
-      const pastMonths = 6;
+      // Get transaction data from the last 30 days for current rate calculation
+      const recentData = await this.prepareRecentTransactionData(userId, 30);
+
+      // If no recent transactions, fall back to historical approach with 3 months data
+      if (recentData.transactionCount === 0) {
+        const pastMonths = 3;
+        const transactions = await TransactionCollection.find({
+          userId,
+          date: { $gte: addMonths(new Date(), -pastMonths) },
+        }).sort({ date: 1 });
+
+        if (!transactions.length) {
+          return this._createDefaultGoalForecast(activeGoal);
+        }
+
+        const monthlyTransactions = this._groupTransactionsByMonth(transactions);
+
+        // Calculate average monthly savings with weighted average
+        const monthlySavings = this._calculateWeightedMonthlySavings(monthlyTransactions);
+
+        // Ensure we have a valid monthlySavings value
+        const safeMonthlySavings = isNaN(monthlySavings) || !isFinite(monthlySavings) ? 0 : monthlySavings;
+
+        // Calculate savings volatility
+        const savingsVolatility = this._calculateSavingsVolatility(monthlyTransactions);
+
+        // Ensure volatility is a valid number
+        const safeVolatility =
+          isNaN(savingsVolatility) || !isFinite(savingsVolatility) ? 0.5 : Math.min(Math.max(savingsVolatility, 0), 1);
+
+        return this._generateGoalForecast(activeGoal, safeMonthlySavings, safeVolatility, transactions);
+      }
+
+      // Calculate monthly savings from daily data
+      const monthlySavings = recentData.totalIncome - recentData.totalExpense;
+
+      // Fallback to get historical data for volatility calculation
+      const pastMonths = 3;
       const transactions = await TransactionCollection.find({
         userId,
         date: { $gte: addMonths(new Date(), -pastMonths) },
       }).sort({ date: 1 });
 
-      if (!transactions.length) {
-        return this._createDefaultGoalForecast(activeGoal);
+      // Calculate volatility from historical data
+      let savingsVolatility = 0.5; // Default value
+
+      if (transactions.length > 0) {
+        const monthlyTransactions = this._groupTransactionsByMonth(transactions);
+        const calculatedVolatility = this._calculateSavingsVolatility(monthlyTransactions);
+        savingsVolatility =
+          isNaN(calculatedVolatility) || !isFinite(calculatedVolatility)
+            ? 0.5
+            : Math.min(Math.max(calculatedVolatility, 0), 1);
       }
 
-      const monthlyTransactions = this._groupTransactionsByMonth(transactions);
-
-      // Calculate average monthly savings with weighted average
-      const monthlySavings = this._calculateWeightedMonthlySavings(monthlyTransactions);
-
-      // Ensure we have a valid monthlySavings value
-      const safeMonthlySavings = isNaN(monthlySavings) || !isFinite(monthlySavings) ? 0 : monthlySavings;
-
-      // Calculate savings volatility
-      const savingsVolatility = this._calculateSavingsVolatility(monthlyTransactions);
-
-      // Ensure volatility is a valid number
-      const safeVolatility =
-        isNaN(savingsVolatility) || !isFinite(savingsVolatility) ? 0.5 : Math.min(Math.max(savingsVolatility, 0), 1);
-
-      // Calculate remaining amount needed
-      const remaining = activeGoal.targetAmount - activeGoal.currentAmount;
-
-      // Calculate projected completion based on current rate
-      let monthsToGoal;
-      let projectedDate = null;
-
-      if (safeMonthlySavings <= 0) {
-        // If not saving or spending more than earning, goal won't be reached
-        monthsToGoal = null;
-      } else {
-        // Calculate months needed with adjustment for volatility
-        const volatilityAdjustedSavings = safeMonthlySavings * (1 - safeVolatility * 0.5);
-        monthsToGoal = Math.max(1, Math.ceil(remaining / Math.abs(volatilityAdjustedSavings)));
-
-        // Cap months to goal at a reasonable maximum
-        monthsToGoal = Math.min(monthsToGoal, 240); // 20 years max
-
-        // Create a valid date object for the projected date
-        const today = new Date();
-        today.setDate(1); // First day of the month
-        today.setHours(0, 0, 0, 0); // Midnight
-        projectedDate = new Date(today); // Clone today
-        projectedDate.setMonth(today.getMonth() + monthsToGoal); // Add months
-      }
-
-      // Get months until deadline if it exists
-      let monthsUntilDeadline = null;
-      if (activeGoal.deadline) {
-        const deadlineDate = new Date(activeGoal.deadline);
-        if (isNaN(deadlineDate.getTime())) {
-          // Invalid deadline date
-          monthsUntilDeadline = null;
-        } else {
-          // Ensure deadlineDate is set to midnight for consistent calculations
-          deadlineDate.setHours(0, 0, 0, 0);
-          monthsUntilDeadline = differenceInMonths(deadlineDate, new Date());
-        }
-      }
-
-      // Calculate achievability score considering multiple factors
-      const achievabilityScore = this._calculateEnhancedGoalAchievabilityScore(
-        safeMonthlySavings,
-        remaining,
-        activeGoal.targetAmount,
-        safeVolatility,
-        monthsUntilDeadline,
-      );
-
-      // Ensure score is a valid number
-      const safeScore =
-        isNaN(achievabilityScore) || !isFinite(achievabilityScore) ? 0 : Math.min(Math.max(achievabilityScore, 0), 100);
-
-      // Calculate milestones for the goal
-      const milestones = this._calculateGoalMilestones(
-        activeGoal.currentAmount,
-        activeGoal.targetAmount,
-        safeMonthlySavings,
-        safeVolatility,
-      );
-
-      // Generate adjustment suggestions
-      const suggestions = this._generateAdjustmentSuggestions(
-        safeMonthlySavings,
-        remaining,
-        activeGoal.deadline ? new Date(activeGoal.deadline) : null,
-        transactions,
-      );
-
-      const goalForecast = {
-        goalId: activeGoal._id,
-        goalName: activeGoal.name || 'Financial Goal',
-        currentAmount: activeGoal.currentAmount || 0,
-        targetAmount: activeGoal.targetAmount || 0,
-        monthsToGoal: monthsToGoal,
-        projectedDate,
-        monthlySavings: Math.abs(safeMonthlySavings),
-        savingsVolatility: safeVolatility,
-        probability: safeScore,
-        isAchievable: safeScore > 25,
-        milestones,
-        adjustmentSuggestions: suggestions,
-      };
-
-      this.goalCalculationCache.set(cacheKey, {
-        data: goalForecast,
-        timestamp: Date.now(),
-      });
-
-      return goalForecast;
+      return this._generateGoalForecast(activeGoal, monthlySavings, savingsVolatility, transactions);
     } catch (error) {
       console.error('Error calculating goal forecast:', error);
       return null;
     }
+  }
+
+  // Extract goal forecast calculation logic to a separate method
+  _generateGoalForecast(activeGoal, monthlySavings, savingsVolatility, transactions) {
+    // Calculate remaining amount needed
+    const remaining = activeGoal.targetAmount - activeGoal.currentAmount;
+
+    // Calculate projected completion based on current rate
+    let monthsToGoal;
+    let projectedDate = null;
+
+    if (monthlySavings <= 0) {
+      // If not saving or spending more than earning, goal won't be reached
+      monthsToGoal = null;
+    } else {
+      // Calculate months needed with adjustment for volatility
+      const volatilityAdjustedSavings = monthlySavings * (1 - savingsVolatility * 0.5);
+      monthsToGoal = Math.max(1, Math.ceil(remaining / Math.abs(volatilityAdjustedSavings)));
+
+      // Cap months to goal at a reasonable maximum
+      monthsToGoal = Math.min(monthsToGoal, 240); // 20 years max
+
+      // Create a valid date object for the projected date
+      const today = new Date();
+      today.setDate(1); // First day of the month
+      today.setHours(0, 0, 0, 0); // Midnight
+      projectedDate = new Date(today); // Clone today
+      projectedDate.setMonth(today.getMonth() + monthsToGoal); // Add months
+    }
+
+    // Get months until deadline if it exists
+    let monthsUntilDeadline = null;
+    if (activeGoal.deadline) {
+      const deadlineDate = new Date(activeGoal.deadline);
+      if (isNaN(deadlineDate.getTime())) {
+        // Invalid deadline date
+        monthsUntilDeadline = null;
+      } else {
+        // Ensure deadlineDate is set to midnight for consistent calculations
+        deadlineDate.setHours(0, 0, 0, 0);
+        monthsUntilDeadline = differenceInMonths(deadlineDate, new Date());
+      }
+    }
+
+    // Calculate achievability score considering multiple factors
+    const achievabilityScore = this._calculateEnhancedGoalAchievabilityScore(
+      monthlySavings,
+      remaining,
+      activeGoal.targetAmount,
+      savingsVolatility,
+      monthsUntilDeadline,
+    );
+
+    // Ensure score is a valid number
+    const safeScore =
+      isNaN(achievabilityScore) || !isFinite(achievabilityScore) ? 0 : Math.min(Math.max(achievabilityScore, 0), 100);
+
+    // Calculate milestones for the goal
+    const milestones = this._calculateGoalMilestones(
+      activeGoal.currentAmount,
+      activeGoal.targetAmount,
+      monthlySavings,
+      savingsVolatility,
+    );
+
+    // Generate adjustment suggestions
+    const suggestions = this._generateAdjustmentSuggestions(
+      monthlySavings,
+      remaining,
+      activeGoal.deadline ? new Date(activeGoal.deadline) : null,
+      transactions,
+    );
+
+    const goalForecast = {
+      goalId: activeGoal._id,
+      goalName: activeGoal.name || 'Financial Goal',
+      currentAmount: activeGoal.currentAmount || 0,
+      targetAmount: activeGoal.targetAmount || 0,
+      monthsToGoal: monthsToGoal,
+      projectedDate,
+      monthlySavings: Math.abs(monthlySavings),
+      savingsVolatility: savingsVolatility,
+      probability: safeScore,
+      isAchievable: safeScore > 25,
+      milestones,
+      adjustmentSuggestions: suggestions,
+    };
+
+    this.goalCalculationCache.set(`goal_${activeGoal.userId}`, {
+      data: goalForecast,
+      timestamp: Date.now(),
+    });
+
+    return goalForecast;
   }
 
   _calculateGoalMilestones(currentAmount, targetAmount, monthlySavings, volatility) {
@@ -1177,6 +1237,124 @@ class AdvancedAIForecastService {
     });
 
     return months;
+  }
+
+  // New method to get transactions from the last N days
+  async prepareRecentTransactionData(userId, days = 30) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const transactions = await TransactionCollection.aggregate([
+      {
+        $match: {
+          userId,
+          date: { $gte: startDate },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalExpense: {
+            $sum: {
+              $cond: [{ $eq: ['$type', 'expense'] }, '$amount', 0],
+            },
+          },
+          totalIncome: {
+            $sum: {
+              $cond: [{ $eq: ['$type', 'income'] }, '$amount', 0],
+            },
+          },
+          transactionCount: { $sum: 1 },
+          expenseCategories: {
+            $addToSet: {
+              $cond: [{ $eq: ['$type', 'expense'] }, '$category', null],
+            },
+          },
+          incomeCategories: {
+            $addToSet: {
+              $cond: [{ $eq: ['$type', 'income'] }, '$category', null],
+            },
+          },
+        },
+      },
+    ]);
+
+    // Default values if no transactions found
+    if (!transactions || transactions.length === 0) {
+      return {
+        totalExpense: 0,
+        totalIncome: 0,
+        transactionCount: 0,
+        expenseCategories: [],
+        incomeCategories: [],
+        daysAnalyzed: days,
+      };
+    }
+
+    // Clean up categories (remove null values)
+    const expenseCategories = transactions[0].expenseCategories.filter((cat) => cat !== null);
+    const incomeCategories = transactions[0].incomeCategories.filter((cat) => cat !== null);
+
+    // Convert total to daily average and then project to monthly
+    const dailyExpense = transactions[0].totalExpense / days;
+    const dailyIncome = transactions[0].totalIncome / days;
+    const monthlyExpense = dailyExpense * 30;
+    const monthlyIncome = dailyIncome * 30;
+
+    return {
+      totalExpense: monthlyExpense, // Projected to monthly amount
+      totalIncome: monthlyIncome, // Projected to monthly amount
+      rawExpense: transactions[0].totalExpense,
+      rawIncome: transactions[0].totalIncome,
+      transactionCount: transactions[0].transactionCount,
+      expenseCategories,
+      incomeCategories,
+      daysAnalyzed: days,
+      dailyExpense,
+      dailyIncome,
+    };
+  }
+
+  // New method to calculate predictions based on recent data
+  _calculateRecentBasedPrediction(recentTotal, historicalSeries, categories, monthIndex, trendsData) {
+    if (!isFinite(recentTotal) || recentTotal <= 0) {
+      // Fallback to historical data if no recent data
+      return this._enhancedStatisticalPrediction(historicalSeries, categories, monthIndex, trendsData);
+    }
+
+    // Use recent total as the base
+    let baseAmount = recentTotal;
+
+    // Apply seasonal pattern if we have enough historical data
+    if (historicalSeries && historicalSeries.length >= 12) {
+      const monthlyAverage = this._calculateMonthlyAverage(historicalSeries, monthIndex);
+      const overallAverage = historicalSeries.reduce((sum, val) => sum + val, 0) / historicalSeries.length;
+
+      if (overallAverage > 0 && monthlyAverage > 0) {
+        // Calculate seasonal factor (how this month compares to yearly average)
+        const seasonalFactor = monthlyAverage / overallAverage;
+        // Apply seasonal adjustment to recent data
+        baseAmount = baseAmount * seasonalFactor;
+      }
+    }
+
+    // Apply recent trend if available
+    if (trendsData && trendsData.length > 0) {
+      const recentTrendData = trendsData.slice(-3);
+      const avgGrowth =
+        recentTrendData.reduce((sum, t) => {
+          // Use the appropriate growth rate based on whether we're predicting expenses or income
+          const growthRate = historicalSeries === trendsData.expenses ? t.expenseGrowth : t.incomeGrowth;
+          return sum + (isFinite(growthRate) ? growthRate : 0);
+        }, 0) / recentTrendData.length;
+
+      // Apply a small growth adjustment based on recent trends
+      if (isFinite(avgGrowth)) {
+        baseAmount = baseAmount * (1 + avgGrowth * 0.5); // Dampen the growth effect
+      }
+    }
+
+    return Math.max(baseAmount, 0);
   }
 }
 
