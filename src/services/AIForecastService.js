@@ -212,7 +212,9 @@ class AdvancedAIForecastService {
       // Ensure the values are valid numbers
       const safeExpense = Math.max(0, isNaN(adjustedExpense) ? 0 : adjustedExpense);
       const safeIncome = Math.max(0, isNaN(adjustedIncome) ? 0 : adjustedIncome);
-      const projectedBalance = Math.max(0, safeIncome - safeExpense);
+
+      // Calculate the net balance (can be negative)
+      const projectedBalance = safeIncome - safeExpense;
 
       const confIntervals = this._calculateConfidenceInterval(safeExpense, data.expenses);
       const confIntervalsIncome = this._calculateConfidenceInterval(safeIncome, data.incomes);
@@ -1097,11 +1099,17 @@ class AdvancedAIForecastService {
 
       const monthName = format(forecastDate, 'MMMM');
 
+      // Default values for income and expense
+      const defaultExpense = 0;
+      const defaultIncome = 0;
+      // Calculate balance as income - expense (can be negative)
+      const projectedBalance = defaultIncome - defaultExpense;
+
       return {
         date: forecastDate,
-        projectedExpense: 0,
-        projectedIncome: 0,
-        projectedBalance: 0,
+        projectedExpense: defaultExpense,
+        projectedIncome: defaultIncome,
+        projectedBalance,
         confidenceIntervals: {
           expense: { lower: 0, upper: 0 },
           income: { lower: 0, upper: 0 },

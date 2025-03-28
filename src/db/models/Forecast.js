@@ -23,7 +23,7 @@ const budgetForecastSchema = new mongoose.Schema(
     date: { type: Date, required: true },
     projectedExpense: { type: Number, default: 0 },
     projectedIncome: { type: Number, default: 0 },
-    projectedBalance: { type: Number, default: 0 },
+    projectedBalance: { type: Number },
     confidenceIntervals: {
       expense: { type: confidenceIntervalSchema, default: () => ({}) },
       income: { type: confidenceIntervalSchema, default: () => ({}) },
