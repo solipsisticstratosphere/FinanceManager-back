@@ -8,7 +8,7 @@ class AdvancedAIForecastService {
   constructor() {
     this.forecastCache = new Map();
     this.goalCalculationCache = new Map();
-    this.MODEL_CACHE_DURATION = 6 * 60 * 60 * 1000; // 6 hours
+    this.MODEL_CACHE_DURATION = 2 * 60 * 60 * 1000; // Reduced to 2 hours from 6 hours
     this.trainedModels = new Map(); // Cache for trained TensorFlow models
   }
 
@@ -891,16 +891,16 @@ class AdvancedAIForecastService {
       if (remaining <= 0) return 100; // Already achieved
       if (monthlySavings <= 0) return 0; // No savings
 
-      // Base achievement factor - with safety cap for extremely high variability
-      const achievementFactor = monthlySavings / (remaining || 1);
+      // Base achievement factor - with improved calculation
+      const achievementFactor = Math.min(1, (monthlySavings / (remaining || 1)) * 12); // Scale by months (12 = 1 year)
 
       // Check if variability is higher than monthly savings (extreme case)
       const extremeVariability = variability > monthlySavings;
 
-      // Modified penalty for high variability - with a safety floor
+      // Modified penalty for high variability - less punishing with higher floor
       const variabilityFactor = extremeVariability
-        ? 0.2 // Set a minimum floor of 0.2 for extreme cases
-        : Math.min(1, Math.max(0.2, 1 - (variability / (monthlySavings || 1)) * 0.5));
+        ? 0.5 // Higher floor of 0.5 for extreme cases
+        : Math.min(1, Math.max(0.5, 1 - (variability / (monthlySavings || 1)) * 0.3)); // Reduced penalty
 
       // Trend analysis - are savings increasing or decreasing?
       let trendFactor = 0;
@@ -909,36 +909,32 @@ class AdvancedAIForecastService {
         const olderAvg =
           historicalSavings.slice(3).reduce((a, b) => a + b, 0) / Math.max(1, historicalSavings.slice(3).length);
 
-        trendFactor = recentAvg > olderAvg ? 0.2 : -0.1; // Bonus for improving trend
+        trendFactor = recentAvg > olderAvg ? 0.3 : -0.1; // Increased bonus for improving trend
       }
 
-      // Scale based on how ambitious the goal is compared to monthly savings
-      const ambitiousFactor = Math.min(1, monthlySavings / (targetAmount * 0.1 || 1));
+      // Scale based on how ambitious the goal is compared to monthly savings - less punishing
+      const ambitiousFactor = Math.min(1, Math.max(0.5, monthlySavings / (targetAmount * 0.05 || 1))); // Higher floor of 0.5
 
       // Combine all factors with safety checks for extreme variability
       let probabilityScore;
       if (extremeVariability) {
-        // For extreme variability, use a more conservative calculation
-        probabilityScore = achievementFactor * 20 * variabilityFactor * (1 + trendFactor) * Math.sqrt(ambitiousFactor);
+        // For extreme variability, use a more generous calculation
+        probabilityScore = achievementFactor * 40 * variabilityFactor * (1 + trendFactor) * Math.sqrt(ambitiousFactor);
       } else {
-        probabilityScore = achievementFactor * 50 * variabilityFactor * (1 + trendFactor) * Math.sqrt(ambitiousFactor);
+        probabilityScore = achievementFactor * 70 * variabilityFactor * (1 + trendFactor) * Math.sqrt(ambitiousFactor);
       }
 
-      // Ensure minimum probability of 1% when there are positive savings
-      if (monthlySavings > 0 && probabilityScore < 1) {
-        probabilityScore = 1;
+      // Ensure minimum probability with positive savings - higher min probability
+      if (monthlySavings > 0) {
+        probabilityScore = Math.max(probabilityScore, 10); // At least 10% if there are any positive savings
       }
 
       // Round the result to avoid unnecessary precision issues
       return Math.min(Math.max(Math.round(probabilityScore), 0), 100);
     } catch (error) {
       console.error('Error in _calculateEnhancedGoalProbability:', error);
-      // Return a reasonable default based on achievement factor with minimum of 1%
-      const basicProbability = Math.min(
-        Math.max(Math.round((monthlySavings / (remaining || 1)) * 50), monthlySavings > 0 ? 1 : 0),
-        100,
-      );
-      return basicProbability;
+      // Return a reasonable default based on achievement factor with minimum of 10%
+      return Math.min(Math.max(Math.round((monthlySavings / (remaining || 1)) * 80), monthlySavings > 0 ? 10 : 0), 100);
     }
   }
 

@@ -129,7 +129,23 @@ export const deactivateGoal = async (userId, goalId) => {
 };
 
 export const deleteGoal = async (userId, goalId) => {
-  const goal = await GoalCollection.findOneAndDelete({ _id: goalId, userId });
-  if (!goal) throw new createHttpError(404, 'Goal not found');
-  return goal;
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const goal = await GoalCollection.findOneAndDelete({ _id: goalId, userId }, { session });
+    if (!goal) {
+      throw new createHttpError(404, 'Goal not found');
+    }
+
+    // Update forecasts after deleting a goal to ensure they're current
+    await updateForecasts(userId, session);
+
+    await session.commitTransaction();
+    return goal;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };

@@ -89,8 +89,16 @@ const processWithoutTransaction = async (transactionData) => {
       { new: true }, // Return updated document
     );
 
+    // Update goal progress and forecasts like in processWithTransaction
+    const goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange);
+    await updateForecasts(transactionData.userId);
+
     console.log('Transaction processed successfully');
-    return { transaction };
+    return {
+      transaction,
+      goalAchieved: goalUpdate?.isAchieved || false,
+      updatedGoal: goalUpdate?.goal,
+    };
   } catch (error) {
     console.error('Process without transaction error:', {
       name: error.name,
