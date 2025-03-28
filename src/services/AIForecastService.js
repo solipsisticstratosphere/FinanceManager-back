@@ -913,7 +913,7 @@ class AdvancedAIForecastService {
         risks.push({
           type: 'high_variability',
           severity: Math.min(100, Math.round(variabilityRatio * 100)),
-          description: 'Your savings rate is highly variable',
+          description: 'Ваша норма заощаджень дуже різна.',
         });
       }
 
@@ -927,7 +927,7 @@ class AdvancedAIForecastService {
           risks.push({
             type: 'declining_savings',
             severity: trendSeverity,
-            description: 'Your recent savings rate is declining',
+            description: 'Ваша недавня норма заощаджень знижується',
           });
         }
       }
@@ -938,7 +938,7 @@ class AdvancedAIForecastService {
         risks.push({
           type: 'ambitious_timeline',
           severity: Math.min(100, Math.round((monthsRequired - 36) * 2)),
-          description: 'Your goal may take a long time to achieve',
+          description: 'Для досягнення вашої мети може знадобитися багато часу',
         });
       }
 
@@ -949,7 +949,7 @@ class AdvancedAIForecastService {
           risks.push({
             type: 'negative_months',
             severity: Math.min(100, Math.round((negativeMonths / historicalSavings.length) * 100)),
-            description: 'You had months with negative savings',
+            description: 'У вас були місяці з негативними заощадженнями',
           });
         }
       }
