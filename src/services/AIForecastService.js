@@ -128,12 +128,14 @@ class AdvancedAIForecastService {
           predictedExpense,
           seasonalityFactor,
           expenseTrendFactor,
+          'expense',
         );
 
         const { adjustedIncome, incomeConfidence } = this._adjustWithConfidence(
           predictedIncome,
           seasonalityFactor,
           incomeTrendFactor,
+          'income',
         );
 
         const projectedBalance = Math.max(0, adjustedIncome - adjustedExpense);
@@ -299,7 +301,7 @@ class AdvancedAIForecastService {
     for (const [category, data] of Object.entries(categoryData)) {
       // Apply time series forecasting to individual categories
       const prediction = this._arimaBasedPrediction(data.amounts, monthOffset);
-      const seasonalFactor = this._calculateSeasonalityFactor(data.amounts, monthOffset);
+      const seasonalFactor = this._calculateAdvancedSeasonalityFactor(data.amounts, monthOffset, dates);
       const trendFactor = this._calculateAdvancedTrendFactor(data.amounts);
 
       // Adjust prediction with seasonality and trend
@@ -366,7 +368,7 @@ class AdvancedAIForecastService {
     return prediction * confidenceFactor + mean * (1 - confidenceFactor);
   }
 
-  _adjustWithConfidence(prediction, seasonalityFactor, trendFactor) {
+  _adjustWithConfidence(prediction, seasonalityFactor, trendFactor, type = 'expense') {
     const adjustedValue = prediction * (1 + seasonalityFactor + trendFactor);
 
     // Calculate confidence level based on factors
@@ -374,10 +376,17 @@ class AdvancedAIForecastService {
     // Higher factor magnitude = lower confidence
     const confidenceScore = Math.max(0, Math.min(100, 100 - factorMagnitude * 50));
 
-    return {
-      adjustedValue: Math.max(adjustedValue, 0),
-      confidenceScore,
-    };
+    if (type === 'expense') {
+      return {
+        adjustedExpense: Math.max(adjustedValue, 0),
+        expenseConfidence: confidenceScore,
+      };
+    } else {
+      return {
+        adjustedIncome: Math.max(adjustedValue, 0),
+        incomeConfidence: confidenceScore,
+      };
+    }
   }
 
   _calculateAdvancedSeasonalityFactor(series, monthOffset, dates) {
