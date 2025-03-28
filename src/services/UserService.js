@@ -1,4 +1,4 @@
-import { UserCollection } from '../db/models/User.js';
+import UserCollection from '../db/models/User.js';
 import { TransactionCollection } from '../db/models/Transaction.js';
 import { subMonths } from 'date-fns';
 

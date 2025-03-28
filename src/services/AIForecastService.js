@@ -4,6 +4,7 @@ import { TransactionCollection } from '../db/models/Transaction.js';
 import * as tf from '@tensorflow/tfjs';
 import { addMonths, subMonths, differenceInMonths, format, parse, isLastDayOfMonth, getDaysInMonth } from 'date-fns';
 import mongoose from 'mongoose';
+import UserCollection from '../db/models/User.js';
 
 class AdvancedAIForecastService {
   constructor() {
@@ -1382,8 +1383,6 @@ class AdvancedAIForecastService {
   // Method to get user data for default expense/income
   async _getUserData(userId) {
     try {
-      // Use the direct import instead of model() to avoid errors
-      const { UserCollection } = await import('../db/models/User.js');
       const user = await UserCollection.findById(userId);
 
       if (!user) return null;
