@@ -86,89 +86,128 @@ class AdvancedAIForecastService {
       return cachedForecast.data;
     }
 
-    const data = await this.prepareForecastData(userId);
+    try {
+      const data = await this.prepareForecastData(userId);
 
-    // Detect and remove outliers for more accurate predictions
-    const cleanedExpenses = this._removeOutliers(data.expenses);
-    const cleanedIncomes = this._removeOutliers(data.incomes);
+      // Check if we have enough data
+      if (!data.expenses.length || !data.incomes.length) {
+        // Return safe default values if no data
+        return this._generateDefaultForecast();
+      }
 
-    // Train TensorFlow models if needed
-    await this._trainOrGetModel(userId, cleanedExpenses, 'expense', data.dates);
-    await this._trainOrGetModel(userId, cleanedIncomes, 'income', data.dates);
+      // Detect and remove outliers for more accurate predictions
+      const cleanedExpenses = this._removeOutliers(data.expenses);
+      const cleanedIncomes = this._removeOutliers(data.incomes);
 
-    const forecastMonths = 12;
-    const experimentalForecast = await Promise.all(
-      Array.from({ length: forecastMonths }, async (_, i) => {
-        const date = addMonths(new Date(), i + 1);
-        const monthStr = format(date, 'yyyy-MM');
+      // Train TensorFlow models if needed
+      await this._trainOrGetModel(userId, cleanedExpenses, 'expense', data.dates);
+      await this._trainOrGetModel(userId, cleanedIncomes, 'income', data.dates);
 
-        // Get category-based predictions for more accuracy
-        const categoryPredictions = await this._predictCategories(data.categoryData, i, data.dates);
+      const forecastMonths = 12;
+      const experimentalForecast = await Promise.all(
+        Array.from({ length: forecastMonths }, async (_, i) => {
+          try {
+            const date = addMonths(new Date(), i + 1);
+            const monthStr = format(date, 'yyyy-MM');
 
-        // Use TensorFlow for expense/income predictions
-        let predictedExpense = await this._tfPredict(userId, 'expense', i + 1);
-        let predictedIncome = await this._tfPredict(userId, 'income', i + 1);
+            // Get category-based predictions for more accuracy
+            const categoryPredictions = await this._predictCategories(data.categoryData, i, data.dates);
 
-        // Fallback to statistical prediction if TF model is not reliable
-        if (!predictedExpense || predictedExpense <= 0) {
-          predictedExpense = this._arimaBasedPrediction(cleanedExpenses, i);
-        }
+            // Use TensorFlow for expense/income predictions
+            let predictedExpense = await this._tfPredict(userId, 'expense', i + 1);
+            let predictedIncome = await this._tfPredict(userId, 'income', i + 1);
 
-        if (!predictedIncome || predictedIncome <= 0) {
-          predictedIncome = this._arimaBasedPrediction(cleanedIncomes, i);
-        }
+            // Fallback to statistical prediction if TF model is not reliable
+            if (!predictedExpense || predictedExpense <= 0 || isNaN(predictedExpense)) {
+              predictedExpense = this._arimaBasedPrediction(cleanedExpenses, i);
+            }
 
-        // Apply advanced seasonality and trend corrections
-        const seasonalityFactor = this._calculateAdvancedSeasonalityFactor(cleanedExpenses, i, data.dates);
-        const expenseTrendFactor = this._calculateAdvancedTrendFactor(cleanedExpenses);
-        const incomeTrendFactor = this._calculateAdvancedTrendFactor(cleanedIncomes);
+            if (!predictedIncome || predictedIncome <= 0 || isNaN(predictedIncome)) {
+              predictedIncome = this._arimaBasedPrediction(cleanedIncomes, i);
+            }
 
-        // Calculate with confidence intervals for better risk assessment
-        const { adjustedExpense, expenseConfidence } = this._adjustWithConfidence(
-          predictedExpense,
-          seasonalityFactor,
-          expenseTrendFactor,
-          'expense',
-        );
+            // Final safety check for NaN values
+            if (isNaN(predictedExpense)) predictedExpense = this._getDefaultValue(data.expenses, 'expense');
+            if (isNaN(predictedIncome)) predictedIncome = this._getDefaultValue(data.incomes, 'income');
 
-        const { adjustedIncome, incomeConfidence } = this._adjustWithConfidence(
-          predictedIncome,
-          seasonalityFactor,
-          incomeTrendFactor,
-          'income',
-        );
+            // Apply advanced seasonality and trend corrections
+            const seasonalityFactor = this._calculateAdvancedSeasonalityFactor(cleanedExpenses, i, data.dates);
+            const expenseTrendFactor = this._calculateAdvancedTrendFactor(cleanedExpenses);
+            const incomeTrendFactor = this._calculateAdvancedTrendFactor(cleanedIncomes);
 
-        const projectedBalance = Math.max(0, adjustedIncome - adjustedExpense);
-        const balanceConfidence = (expenseConfidence + incomeConfidence) / 2;
+            // Calculate with confidence intervals for better risk assessment
+            const { adjustedExpense, expenseConfidence } = this._adjustWithConfidence(
+              predictedExpense,
+              seasonalityFactor,
+              expenseTrendFactor,
+              'expense',
+            );
 
-        return {
-          date,
-          monthStr,
-          projectedExpense: Math.max(adjustedExpense, 0),
-          projectedIncome: Math.max(adjustedIncome, 0),
-          projectedBalance,
-          categoryPredictions,
-          confidence: {
-            expense: expenseConfidence,
-            income: incomeConfidence,
-            balance: balanceConfidence,
-          },
-          riskAssessment: this._calculateEnhancedRiskScore(
-            adjustedExpense,
-            adjustedIncome,
-            expenseConfidence,
-            incomeConfidence,
-          ),
-        };
-      }),
-    );
+            const { adjustedIncome, incomeConfidence } = this._adjustWithConfidence(
+              predictedIncome,
+              seasonalityFactor,
+              incomeTrendFactor,
+              'income',
+            );
 
-    this.forecastCache.set(cacheKey, {
-      data: experimentalForecast,
-      timestamp: Date.now(),
-    });
+            // Safety check for NaN values after adjustments
+            const safeExpense = isNaN(adjustedExpense)
+              ? this._getDefaultValue(data.expenses, 'expense')
+              : adjustedExpense;
+            const safeIncome = isNaN(adjustedIncome) ? this._getDefaultValue(data.incomes, 'income') : adjustedIncome;
+            const projectedBalance = Math.max(0, safeIncome - safeExpense);
+            const balanceConfidence = (expenseConfidence + incomeConfidence) / 2;
 
-    return experimentalForecast;
+            // Clean category predictions (remove NaN values)
+            const cleanedCategoryPredictions = {};
+            for (const [category, prediction] of Object.entries(categoryPredictions)) {
+              cleanedCategoryPredictions[category] = {
+                amount: isNaN(prediction.amount) ? 0 : prediction.amount,
+                type: prediction.type,
+              };
+            }
+
+            // Calculate risk with safe values
+            const riskAssessment = this._calculateEnhancedRiskScore(
+              safeExpense,
+              safeIncome,
+              expenseConfidence,
+              incomeConfidence,
+            );
+
+            return {
+              date,
+              monthStr,
+              projectedExpense: Math.max(safeExpense, 0),
+              projectedIncome: Math.max(safeIncome, 0),
+              projectedBalance,
+              categoryPredictions: cleanedCategoryPredictions,
+              confidence: {
+                expense: expenseConfidence,
+                income: incomeConfidence,
+                balance: balanceConfidence,
+              },
+              riskAssessment: isNaN(riskAssessment) ? 50 : riskAssessment,
+            };
+          } catch (error) {
+            console.error(`Error predicting month ${i + 1}:`, error);
+            // Return safe default values for this month
+            return this._generateDefaultMonthForecast(i);
+          }
+        }),
+      );
+
+      this.forecastCache.set(cacheKey, {
+        data: experimentalForecast,
+        timestamp: Date.now(),
+      });
+
+      return experimentalForecast;
+    } catch (error) {
+      console.error('Error in predictFinancialForecast:', error);
+      // Return safe default values in case of error
+      return this._generateDefaultForecast();
+    }
   }
 
   async _trainOrGetModel(userId, series, type, dates) {
@@ -317,55 +356,64 @@ class AdvancedAIForecastService {
   }
 
   _arimaBasedPrediction(series, monthOffset) {
-    if (series.length === 0) return 1;
+    if (!series || series.length === 0) return 1;
 
-    const validSeries = series.filter((val) => !isNaN(val) && val !== 0);
+    const validSeries = series.filter((val) => !isNaN(val) && val !== null && val !== 0);
     if (validSeries.length === 0) return 1;
 
-    // AR component: Weighted average of past values
-    const arOrder = Math.min(6, Math.floor(validSeries.length / 3));
-    let arComponent = 0;
-    let weightSum = 0;
+    try {
+      // AR component: Weighted average of past values
+      const arOrder = Math.min(6, Math.floor(validSeries.length / 3));
+      let arComponent = 0;
+      let weightSum = 0;
 
-    for (let i = 1; i <= arOrder; i++) {
-      const index = validSeries.length - i;
-      const weight = (arOrder - i + 1) / arOrder; // Higher weights for more recent values
+      for (let i = 1; i <= arOrder; i++) {
+        const index = validSeries.length - i;
+        const weight = (arOrder - i + 1) / arOrder; // Higher weights for more recent values
 
-      if (index >= 0) {
-        arComponent += validSeries[index] * weight;
-        weightSum += weight;
+        if (index >= 0) {
+          arComponent += validSeries[index] * weight;
+          weightSum += weight;
+        }
       }
+
+      arComponent = weightSum > 0 ? arComponent / weightSum : validSeries[validSeries.length - 1];
+
+      // MA component: Moving average of errors
+      const errors = [];
+      const maOrder = Math.min(3, Math.floor(validSeries.length / 4));
+
+      for (let i = maOrder; i < validSeries.length; i++) {
+        const predicted = validSeries.slice(i - maOrder, i).reduce((a, b) => a + b, 0) / maOrder;
+        errors.push(validSeries[i] - predicted);
+      }
+
+      const maComponent = errors.length > 0 ? errors.reduce((a, b) => a + b, 0) / errors.length : 0;
+
+      // I component: Check if differencing is needed (trend detection)
+      let differenced = [];
+      for (let i = 1; i < validSeries.length; i++) {
+        differenced.push(validSeries[i] - validSeries[i - 1]);
+      }
+
+      const meanDiff = differenced.length > 0 ? differenced.reduce((a, b) => a + b, 0) / differenced.length : 0;
+
+      // Final prediction combining AR, I and MA components
+      const prediction = arComponent + maComponent + meanDiff * monthOffset;
+
+      // Adjust for confidence based on data size
+      const confidenceFactor = Math.min(1, validSeries.length / 12);
+      const mean = validSeries.reduce((a, b) => a + b, 0) / validSeries.length;
+
+      const result = prediction * confidenceFactor + mean * (1 - confidenceFactor);
+
+      // Final safety check
+      return isNaN(result) ? mean : result;
+    } catch (error) {
+      console.error('Error in _arimaBasedPrediction:', error);
+      // Fallback to simple average
+      return validSeries.reduce((a, b) => a + b, 0) / validSeries.length;
     }
-
-    arComponent = weightSum > 0 ? arComponent / weightSum : validSeries[validSeries.length - 1];
-
-    // MA component: Moving average of errors
-    const errors = [];
-    const maOrder = Math.min(3, Math.floor(validSeries.length / 4));
-
-    for (let i = maOrder; i < validSeries.length; i++) {
-      const predicted = validSeries.slice(i - maOrder, i).reduce((a, b) => a + b, 0) / maOrder;
-      errors.push(validSeries[i] - predicted);
-    }
-
-    const maComponent = errors.length > 0 ? errors.reduce((a, b) => a + b, 0) / errors.length : 0;
-
-    // I component: Check if differencing is needed (trend detection)
-    let differenced = [];
-    for (let i = 1; i < validSeries.length; i++) {
-      differenced.push(validSeries[i] - validSeries[i - 1]);
-    }
-
-    const meanDiff = differenced.length > 0 ? differenced.reduce((a, b) => a + b, 0) / differenced.length : 0;
-
-    // Final prediction combining AR, I and MA components
-    const prediction = arComponent + maComponent + meanDiff * monthOffset;
-
-    // Adjust for confidence based on data size
-    const confidenceFactor = Math.min(1, validSeries.length / 12);
-    const mean = validSeries.reduce((a, b) => a + b, 0) / validSeries.length;
-
-    return prediction * confidenceFactor + mean * (1 - confidenceFactor);
   }
 
   _adjustWithConfidence(prediction, seasonalityFactor, trendFactor, type = 'expense') {
@@ -390,65 +438,83 @@ class AdvancedAIForecastService {
   }
 
   _calculateAdvancedSeasonalityFactor(series, monthOffset, dates) {
-    if (series.length < 12) return 0;
+    if (!series || series.length < 12) return 0;
 
-    // Get target month's historical pattern
-    const targetMonth = format(addMonths(new Date(), monthOffset + 1), 'MM');
-    const monthlyPatterns = {};
+    try {
+      // Get target month's historical pattern
+      const targetMonth = format(addMonths(new Date(), monthOffset + 1), 'MM');
+      const monthlyPatterns = {};
 
-    // Group historical data by month
-    dates.forEach((dateStr, i) => {
-      if (!isValid(parseISO(dateStr))) return;
+      // Group historical data by month
+      dates.forEach((dateStr, i) => {
+        if (!isValid(parseISO(dateStr))) return;
 
-      const month = dateStr.split('-')[1]; // Extract month from YYYY-MM
-      if (!monthlyPatterns[month]) {
-        monthlyPatterns[month] = [];
+        const month = dateStr.split('-')[1]; // Extract month from YYYY-MM
+        if (!monthlyPatterns[month]) {
+          monthlyPatterns[month] = [];
+        }
+
+        if (i < series.length) {
+          monthlyPatterns[month].push(series[i]);
+        }
+      });
+
+      // If we have data for target month, use it for seasonality
+      if (monthlyPatterns[targetMonth] && monthlyPatterns[targetMonth].length > 0) {
+        const monthAverage =
+          monthlyPatterns[targetMonth].reduce((a, b) => a + b, 0) / monthlyPatterns[targetMonth].length;
+
+        const overallAverage = series.reduce((a, b) => a + b, 0) / series.length;
+
+        // Calculate seasonal ratio
+        if (overallAverage > 0) {
+          const result = monthAverage / overallAverage - 1; // How much above/below average
+          return isNaN(result) ? 0 : result;
+        }
       }
 
-      if (i < series.length) {
-        monthlyPatterns[month].push(series[i]);
-      }
-    });
+      // Fallback to sinusoidal approximation if no data for target month
+      const seasonalPattern = series.slice(-12); // Last 12 months
+      const avgSeasonal = seasonalPattern.reduce((a, b) => a + b, 0) / seasonalPattern.length;
+      const result = Math.sin((monthOffset * Math.PI) / 6) * (avgSeasonal / (series[series.length - 1] || 1));
 
-    // If we have data for target month, use it for seasonality
-    if (monthlyPatterns[targetMonth] && monthlyPatterns[targetMonth].length > 0) {
-      const monthAverage =
-        monthlyPatterns[targetMonth].reduce((a, b) => a + b, 0) / monthlyPatterns[targetMonth].length;
-
-      const overallAverage = series.reduce((a, b) => a + b, 0) / series.length;
-
-      // Calculate seasonal ratio
-      if (overallAverage > 0) {
-        return monthAverage / overallAverage - 1; // How much above/below average
-      }
+      return isNaN(result) ? 0 : result;
+    } catch (error) {
+      console.error('Error in _calculateAdvancedSeasonalityFactor:', error);
+      return 0;
     }
-
-    // Fallback to sinusoidal approximation if no data for target month
-    const seasonalPattern = series.slice(-12); // Last 12 months
-    const avgSeasonal = seasonalPattern.reduce((a, b) => a + b, 0) / seasonalPattern.length;
-    return Math.sin((monthOffset * Math.PI) / 6) * (avgSeasonal / (series[series.length - 1] || 1));
   }
 
   _calculateAdvancedTrendFactor(series) {
-    if (series.length < 3) return 0;
+    if (!series || series.length < 3) return 0;
 
-    // Use exponential weighted moving average for trend detection
-    // This gives more importance to recent data points
-    let weights = 0;
-    let sum = 0;
+    try {
+      // Use exponential weighted moving average for trend detection
+      // This gives more importance to recent data points
+      let weights = 0;
+      let sum = 0;
 
-    // Calculate exponential weighted slope
-    for (let i = 1; i < series.length; i++) {
-      const weight = Math.exp(0.1 * (i - 1)); // Exponential weight
-      const slope = (series[i] - series[i - 1]) / (series[i - 1] || 1); // Percent change
-      sum += slope * weight;
-      weights += weight;
+      // Calculate exponential weighted slope
+      for (let i = 1; i < series.length; i++) {
+        const weight = Math.exp(0.1 * (i - 1)); // Exponential weight
+        if (isNaN(series[i]) || isNaN(series[i - 1]) || series[i - 1] === 0) continue;
+
+        const slope = (series[i] - series[i - 1]) / (series[i - 1] || 1); // Percent change
+        if (isNaN(slope)) continue;
+
+        sum += slope * weight;
+        weights += weight;
+      }
+
+      const trend = weights > 0 ? sum / weights : 0;
+
+      // Limit extreme values to avoid overreaction
+      const result = Math.max(-0.3, Math.min(0.3, trend));
+      return isNaN(result) ? 0 : result;
+    } catch (error) {
+      console.error('Error in _calculateAdvancedTrendFactor:', error);
+      return 0;
     }
-
-    const trend = weights > 0 ? sum / weights : 0;
-
-    // Limit extreme values to avoid overreaction
-    return Math.max(-0.3, Math.min(0.3, trend));
   }
 
   _calculateEnhancedRiskScore(expense, income, expenseConfidence, incomeConfidence) {
@@ -469,22 +535,131 @@ class AdvancedAIForecastService {
   }
 
   async updateForecasts(userId, session = null) {
-    const budgetForecasts = await this.predictFinancialForecast(userId);
-    const goalForecast = await this._calculateEnhancedGoalForecast(userId);
+    try {
+      const budgetForecasts = await this.predictFinancialForecast(userId);
+      const goalForecast = await this._calculateEnhancedGoalForecast(userId);
 
-    const updateOperation = {
-      budgetForecasts,
-      goalForecast,
-      lastUpdated: new Date(),
-      forecastMethod: 'Advanced-AI-Enhanced-v3', // Updated version
-      confidenceScore: this._calculateOverallConfidence(budgetForecasts),
-    };
+      // Validate data before saving to database
+      const validatedForecasts = this._validateForecastData(budgetForecasts);
+      const validatedGoalForecast = goalForecast ? this._validateGoalForecastData(goalForecast) : null;
 
-    if (session) {
-      return ForecastCollection.findOneAndUpdate({ userId }, updateOperation, { upsert: true, new: true, session });
+      const confidenceScore = this._calculateOverallConfidence(validatedForecasts);
+
+      const updateOperation = {
+        budgetForecasts: validatedForecasts,
+        goalForecast: validatedGoalForecast,
+        lastUpdated: new Date(),
+        forecastMethod: 'Advanced-AI-Enhanced-v3', // Updated version
+        confidenceScore: isNaN(confidenceScore) ? 50 : confidenceScore,
+      };
+
+      if (session) {
+        return ForecastCollection.findOneAndUpdate({ userId }, updateOperation, { upsert: true, new: true, session });
+      }
+
+      return ForecastCollection.findOneAndUpdate({ userId }, updateOperation, { upsert: true, new: true });
+    } catch (error) {
+      console.error('Error in updateForecasts:', error);
+      // Return default forecast in case of error
+      const defaultForecasts = this._generateDefaultForecast();
+      const updateOperation = {
+        budgetForecasts: defaultForecasts,
+        goalForecast: null,
+        lastUpdated: new Date(),
+        forecastMethod: 'Advanced-AI-Enhanced-v3-Default',
+        confidenceScore: 30,
+      };
+
+      if (session) {
+        return ForecastCollection.findOneAndUpdate({ userId }, updateOperation, { upsert: true, new: true, session });
+      }
+
+      return ForecastCollection.findOneAndUpdate({ userId }, updateOperation, { upsert: true, new: true });
+    }
+  }
+
+  _validateForecastData(forecasts) {
+    if (!forecasts || !Array.isArray(forecasts)) {
+      return this._generateDefaultForecast();
     }
 
-    return ForecastCollection.findOneAndUpdate({ userId }, updateOperation, { upsert: true, new: true });
+    return forecasts.map((forecast) => {
+      // Ensure all numeric values are valid numbers
+      const safeExpense = isNaN(forecast.projectedExpense) ? 1000 : forecast.projectedExpense;
+      const safeIncome = isNaN(forecast.projectedIncome) ? 1500 : forecast.projectedIncome;
+      const safeBalance = isNaN(forecast.projectedBalance) ? 500 : forecast.projectedBalance;
+      const safeRisk = isNaN(forecast.riskAssessment) ? 50 : forecast.riskAssessment;
+
+      // Ensure confidence values are valid
+      const confidence = forecast.confidence || { expense: 50, income: 50, balance: 50 };
+      const safeConfidence = {
+        expense: isNaN(confidence.expense) ? 50 : confidence.expense,
+        income: isNaN(confidence.income) ? 50 : confidence.income,
+        balance: isNaN(confidence.balance) ? 50 : confidence.balance,
+      };
+
+      // Ensure category predictions are valid
+      const safeCategories = {};
+      if (forecast.categoryPredictions) {
+        Object.entries(forecast.categoryPredictions).forEach(([category, data]) => {
+          if (data && typeof data === 'object') {
+            safeCategories[category] = {
+              amount: isNaN(data.amount) ? 0 : data.amount,
+              type: data.type || 'expense',
+            };
+          }
+        });
+      }
+
+      return {
+        date: forecast.date || new Date(),
+        monthStr: forecast.monthStr || (forecast.date ? format(forecast.date, 'yyyy-MM') : ''),
+        projectedExpense: safeExpense,
+        projectedIncome: safeIncome,
+        projectedBalance: safeBalance,
+        categoryPredictions: safeCategories,
+        confidence: safeConfidence,
+        riskAssessment: safeRisk,
+      };
+    });
+  }
+
+  _validateGoalForecastData(goalForecast) {
+    if (!goalForecast) return null;
+
+    // Validate numeric values
+    const safeExpectedMonths = isNaN(goalForecast.expectedMonthsToGoal) ? 12 : goalForecast.expectedMonthsToGoal;
+    const safeBestCaseMonths = isNaN(goalForecast.bestCaseMonthsToGoal) ? 6 : goalForecast.bestCaseMonthsToGoal;
+    const safeWorstCaseMonths = isNaN(goalForecast.worstCaseMonthsToGoal) ? 24 : goalForecast.worstCaseMonthsToGoal;
+    const safeMonthlySavings = isNaN(goalForecast.monthlySavings) ? 100 : goalForecast.monthlySavings;
+    const safeVariability = isNaN(goalForecast.savingsVariability) ? 50 : goalForecast.savingsVariability;
+    const safeProbability = isNaN(goalForecast.probability) ? 50 : goalForecast.probability;
+
+    // Ensure risk factors are valid
+    const safeRiskFactors = [];
+    if (goalForecast.riskFactors && Array.isArray(goalForecast.riskFactors)) {
+      goalForecast.riskFactors.forEach((risk) => {
+        if (risk && risk.type) {
+          safeRiskFactors.push({
+            type: risk.type,
+            severity: isNaN(risk.severity) ? 50 : risk.severity,
+            description: risk.description || 'Risk factor',
+          });
+        }
+      });
+    }
+
+    return {
+      goalId: goalForecast.goalId,
+      expectedMonthsToGoal: safeExpectedMonths,
+      bestCaseMonthsToGoal: safeBestCaseMonths,
+      worstCaseMonthsToGoal: safeWorstCaseMonths,
+      projectedDate: goalForecast.projectedDate || addMonths(new Date(), safeExpectedMonths),
+      monthlySavings: safeMonthlySavings,
+      savingsVariability: safeVariability,
+      probability: safeProbability,
+      riskFactors: safeRiskFactors,
+    };
   }
 
   _calculateOverallConfidence(forecasts) {
@@ -687,6 +862,40 @@ class AdvancedAIForecastService {
     const mean = series.reduce((a, b) => a + b, 0) / series.length;
     const variance = series.reduce((sq, n) => sq + Math.pow(n - mean, 2), 0) / series.length;
     return Math.sqrt(variance);
+  }
+
+  _getDefaultValue(series, type) {
+    // Get average from series, or default to reasonable amounts
+    if (series && series.length > 0) {
+      const validValues = series.filter((val) => !isNaN(val) && val !== null);
+      if (validValues.length > 0) {
+        return validValues.reduce((sum, val) => sum + val, 0) / validValues.length;
+      }
+    }
+    // Default fallback values
+    return type === 'expense' ? 1000 : 1500;
+  }
+
+  _generateDefaultMonthForecast(monthOffset) {
+    const date = addMonths(new Date(), monthOffset + 1);
+    return {
+      date,
+      monthStr: format(date, 'yyyy-MM'),
+      projectedExpense: 1000,
+      projectedIncome: 1500,
+      projectedBalance: 500,
+      categoryPredictions: {},
+      confidence: {
+        expense: 50,
+        income: 50,
+        balance: 50,
+      },
+      riskAssessment: 50,
+    };
+  }
+
+  _generateDefaultForecast() {
+    return Array.from({ length: 12 }, (_, i) => this._generateDefaultMonthForecast(i));
   }
 }
 
