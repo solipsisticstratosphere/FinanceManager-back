@@ -586,6 +586,9 @@ class AdvancedAIForecastService {
 
   async updateForecasts(userId, session = null) {
     try {
+      // Clear the goal calculation cache to ensure fresh forecasts after transactions
+      this.goalCalculationCache.delete(`goal_${userId}`);
+
       const budgetForecasts = await this.predictFinancialForecast(userId);
 
       let goalForecast = null;
@@ -822,32 +825,68 @@ class AdvancedAIForecastService {
       const safeMonthlySavings = Math.max(1, avgMonthlySavings);
 
       // Project with variance consideration
-      const optimisticSavings = Math.max(safeMonthlySavings, safeMonthlySavings + savingsVariability);
+      const optimisticSavings = Math.max(safeMonthlySavings, safeMonthlySavings + savingsVariability * 0.5);
 
-      // Modify pessimistic savings calculation to handle high variability
+      // Use multiple approaches to calculate pessimistic scenarios for more realistic estimates
+
+      // 1. Standard approach - subtract variability but with limits
+      const standardPessimistic = Math.max(safeMonthlySavings * 0.2, safeMonthlySavings - savingsVariability);
+
+      // 2. Percentile-based approach - use the worst 25% of historical data
+      const sortedSavings = [...monthlySavingsData].sort((a, b) => a - b);
+      const worstQuartileSavings = sortedSavings[Math.floor(sortedSavings.length * 0.25)] || safeMonthlySavings * 0.5;
+      const percentilePessimistic = Math.max(1, worstQuartileSavings);
+
+      // 3. Trend-based approach - if savings are declining, project based on rate of decline
+      let trendPessimistic = safeMonthlySavings * 0.5; // Default
+      if (monthlySavingsData.length >= 3) {
+        const recentAvg = monthlySavingsData.slice(0, 3).reduce((a, b) => a + b, 0) / 3;
+        const olderAvg =
+          monthlySavingsData.slice(3).reduce((a, b) => a + b, 0) / Math.max(1, monthlySavingsData.slice(3).length);
+
+        if (recentAvg < olderAvg && olderAvg > 0) {
+          // Calculate trend decline rate
+          const declineRate = (olderAvg - recentAvg) / olderAvg;
+          // Project forward with continued decline (but put a floor on it)
+          trendPessimistic = Math.max(safeMonthlySavings * 0.3, safeMonthlySavings * (1 - declineRate));
+        }
+      }
+
+      // Choose the most appropriate pessimistic value based on data quality
       let pessimisticSavings;
-      if (savingsVariability > safeMonthlySavings * 2) {
-        // For extreme variability, use a percentage of monthly savings instead of subtracting the full variability
-        pessimisticSavings = Math.max(1, safeMonthlySavings * 0.1); // At least 10% of average savings
+      const negativeMonths = monthlySavingsData.filter((s) => s <= 0).length;
+
+      if (negativeMonths >= 2) {
+        // High risk scenario - multiple negative savings months
+        pessimisticSavings = Math.max(1, safeMonthlySavings * 0.15);
+      } else if (savingsVariability > safeMonthlySavings) {
+        // High variability scenario
+        pessimisticSavings = Math.max(1, Math.min(percentilePessimistic, trendPessimistic));
       } else {
-        pessimisticSavings = Math.max(1, safeMonthlySavings - savingsVariability);
+        // Normal scenario - use standard approach
+        pessimisticSavings = Math.max(1, standardPessimistic);
       }
 
       const bestCaseMonths = Math.max(1, Math.ceil(remaining / optimisticSavings));
 
-      // Adjust worst case calculation to handle extreme variability better
+      // Calculate worst case months with a more accurate but bounded approach
       let worstCaseMonths;
+
       if (remaining <= 0) {
         worstCaseMonths = 1; // Already achieved
-      } else if (pessimisticSavings <= 1) {
-        // Very low savings rate - cap at 120 months (10 years) for UI display
-        worstCaseMonths = 120;
       } else {
-        // Normal calculation
+        // The base calculation
         worstCaseMonths = Math.ceil(remaining / pessimisticSavings);
 
-        // Apply a reasonable cap (120 months = 10 years) for extreme values
-        worstCaseMonths = Math.min(120, worstCaseMonths);
+        // Apply scaling based on savings data quality
+        const dataQualityFactor = Math.min(1, monthlySavingsData.filter((s) => s > 0).length / 6);
+
+        // Cap the worst case months with data quality consideration
+        // Higher quality data = stricter cap
+        const maxMonths = 36 + (1 - dataQualityFactor) * 84; // Between 36 and 120 months
+
+        // Apply the cap
+        worstCaseMonths = Math.min(Math.round(maxMonths), worstCaseMonths);
       }
 
       const expectedMonths = Math.max(1, Math.ceil(remaining / Math.max(1, safeMonthlySavings)));
@@ -891,16 +930,29 @@ class AdvancedAIForecastService {
       if (remaining <= 0) return 100; // Already achieved
       if (monthlySavings <= 0) return 0; // No savings
 
-      // Base achievement factor - with improved calculation
-      const achievementFactor = Math.min(1, (monthlySavings / (remaining || 1)) * 12); // Scale by months (12 = 1 year)
+      // Check how many months had negative savings
+      const negativeMonths = historicalSavings ? historicalSavings.filter((s) => s <= 0).length : 0;
+      const positiveMonths = historicalSavings ? historicalSavings.filter((s) => s > 0).length : 0;
+      const positiveRatio =
+        historicalSavings && historicalSavings.length > 0 ? positiveMonths / historicalSavings.length : 0.5;
 
-      // Check if variability is higher than monthly savings (extreme case)
-      const extremeVariability = variability > monthlySavings;
+      // Base achievement factor - using both target and time-based calculation
+      // Scale by remaining percentage and months needed
+      const percentageRemaining = remaining / (targetAmount || 1);
+      const monthsNeeded = remaining / (monthlySavings || 1);
 
-      // Modified penalty for high variability - less punishing with higher floor
-      const variabilityFactor = extremeVariability
-        ? 0.5 // Higher floor of 0.5 for extreme cases
-        : Math.min(1, Math.max(0.5, 1 - (variability / (monthlySavings || 1)) * 0.3)); // Reduced penalty
+      // Lower achievement factor for longer timeframes
+      const achievementFactor = Math.min(
+        1,
+        (1 - percentageRemaining) * 0.5 + // 50% weight to percentage completed
+          (monthsNeeded <= 12 ? 0.5 : 0.5 * (12 / monthsNeeded)), // 50% weight to time factor
+      );
+
+      // Variability factor - ratio of savings to variability
+      const variabilityFactor = Math.max(0.3, Math.min(1, monthlySavings / (variability + 1)));
+
+      // Consistency factor - based on how many months had positive savings
+      const consistencyFactor = Math.max(0.4, positiveRatio);
 
       // Trend analysis - are savings increasing or decreasing?
       let trendFactor = 0;
@@ -909,32 +961,36 @@ class AdvancedAIForecastService {
         const olderAvg =
           historicalSavings.slice(3).reduce((a, b) => a + b, 0) / Math.max(1, historicalSavings.slice(3).length);
 
-        trendFactor = recentAvg > olderAvg ? 0.3 : -0.1; // Increased bonus for improving trend
+        // Stronger impact from trend
+        trendFactor = recentAvg >= olderAvg ? 0.3 : -0.2;
       }
 
-      // Scale based on how ambitious the goal is compared to monthly savings - less punishing
-      const ambitiousFactor = Math.min(1, Math.max(0.5, monthlySavings / (targetAmount * 0.05 || 1))); // Higher floor of 0.5
+      // Calculate baseline probability
+      let baselineProbability =
+        40 + // Base probability of 40%
+        achievementFactor * 30 + // Up to 30% from achievement
+        variabilityFactor * 15 + // Up to 15% from stability
+        consistencyFactor * 10 + // Up to 10% from consistency
+        trendFactor * 15; // Up to +15% / -10% from trend
 
-      // Combine all factors with safety checks for extreme variability
-      let probabilityScore;
-      if (extremeVariability) {
-        // For extreme variability, use a more generous calculation
-        probabilityScore = achievementFactor * 40 * variabilityFactor * (1 + trendFactor) * Math.sqrt(ambitiousFactor);
-      } else {
-        probabilityScore = achievementFactor * 70 * variabilityFactor * (1 + trendFactor) * Math.sqrt(ambitiousFactor);
+      // Apply a penalty for negative months
+      if (negativeMonths > 0) {
+        baselineProbability -= negativeMonths * 8; // Each negative month reduces probability
       }
 
-      // Ensure minimum probability with positive savings - higher min probability
-      if (monthlySavings > 0) {
-        probabilityScore = Math.max(probabilityScore, 10); // At least 10% if there are any positive savings
+      // Ensure probability stays between 0 and 100
+      let finalProbability = Math.max(0, Math.min(100, Math.round(baselineProbability)));
+
+      // Ensure minimum probability with positive savings
+      if (monthlySavings > 0 && finalProbability < 5) {
+        finalProbability = 5; // Minimum 5% probability if any positive savings
       }
 
-      // Round the result to avoid unnecessary precision issues
-      return Math.min(Math.max(Math.round(probabilityScore), 0), 100);
+      return finalProbability;
     } catch (error) {
       console.error('Error in _calculateEnhancedGoalProbability:', error);
-      // Return a reasonable default based on achievement factor with minimum of 10%
-      return Math.min(Math.max(Math.round((monthlySavings / (remaining || 1)) * 80), monthlySavings > 0 ? 10 : 0), 100);
+      // Return a reasonable default with minimum of 5%
+      return Math.min(Math.max(Math.round((monthlySavings / (remaining || 1)) * 50), monthlySavings > 0 ? 5 : 0), 100);
     }
   }
 
