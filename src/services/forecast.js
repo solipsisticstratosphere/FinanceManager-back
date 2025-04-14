@@ -3,6 +3,9 @@ import { ForecastCollection } from '../db/models/Forecast.js';
 import { TransactionCollection } from '../db/models/Transaction.js';
 import { format, addMonths, subMonths } from 'date-fns';
 
+// Create an instance of the forecast service
+const forecastService = new AdvancedMachineLearningForecastService();
+
 // Update forecasts whenever a transaction, goal, or balance changes
 export const updateForecasts = async (userId, session = null) => {
   try {
@@ -23,9 +26,9 @@ export const updateForecasts = async (userId, session = null) => {
     
     // Then proceed with full forecast calculation
     if (session) {
-      return await AdvancedMachineLearningForecastService.updateForecasts(userId, session);
+      return await forecastService.updateForecasts(userId, session);
     } else {
-      return await AdvancedMachineLearningForecastService.updateForecasts(userId);
+      return await forecastService.updateForecasts(userId);
     }
   } catch (error) {
     console.error('Error updating forecasts:', error);
@@ -175,7 +178,7 @@ export const getGoalForecasts = async (userId) => {
       Date.now() - new Date(forecast.lastUpdated).getTime() > GOAL_FORECAST_CACHE_DURATION
     ) {
       console.log('Goal forecast missing or outdated, generating new forecast');
-      forecast = await AdvancedMachineLearningForecastService.updateForecasts(userId);
+      forecast = await forecastService.updateForecasts(userId);
     }
 
     // Return only the goal forecast portion
@@ -206,7 +209,7 @@ export const getCategoryForecasts = async (userId, specificCategory = null) => {
       Date.now() - new Date(forecast.lastUpdated).getTime() > CATEGORY_FORECAST_CACHE_DURATION
     ) {
       console.log('Category forecast missing or outdated, generating new forecast');
-      forecast = await AdvancedMachineLearningForecastService.updateForecasts(userId);
+      forecast = await forecastService.updateForecasts(userId);
     }
 
     if (!forecast || !forecast.budgetForecasts || forecast.budgetForecasts.length === 0) {

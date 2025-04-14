@@ -130,7 +130,7 @@ const processWithTransaction = async (transactionData, session) => {
       $inc: { balance: balanceChange },
       lastBalanceUpdate: new Date(),
     },
-    { session },
+    { session, new: true }
   );
 
   // Важно: передаем сессию во все операции внутри транзакции

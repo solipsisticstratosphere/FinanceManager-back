@@ -4,7 +4,7 @@ import { TransactionCollection } from '../db/models/Transaction.js';
 import * as tf from '@tensorflow/tfjs';
 import { addMonths, subMonths, format, differenceInMonths, parseISO, isValid } from 'date-fns';
 
-class AdvancedAIForecastService {
+export default class AdvancedAIForecastService {
   constructor() {
     this.forecastCache = new Map();
     this.goalCalculationCache = new Map();
@@ -1356,5 +1356,3 @@ class AdvancedAIForecastService {
     }
   }
 }
-
-export default new AdvancedAIForecastService();
