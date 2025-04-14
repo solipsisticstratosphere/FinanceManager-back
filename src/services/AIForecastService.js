@@ -650,6 +650,13 @@ class AdvancedAIForecastService {
       
       // Calculate data quality metrics
       const dataQuality = await this._calculateDataQuality(userId);
+      
+      // Ensure all data quality values are valid numbers
+      const safeDataQuality = {
+        transactionCount: Number(dataQuality.transactionCount) || 0,
+        monthsOfData: Number(dataQuality.monthsOfData) || 1,
+        completeness: Number(dataQuality.completeness) || 0
+      };
 
       const updateOperation = {
         budgetForecasts: validatedForecasts,
@@ -660,7 +667,7 @@ class AdvancedAIForecastService {
         calculationStatus: 'completed',
         calculationProgress: 100,
         calculationTime: Date.now() - startTime,
-        dataQuality
+        dataQuality: safeDataQuality
       };
 
       if (session) {
@@ -679,7 +686,12 @@ class AdvancedAIForecastService {
         forecastMethod: 'Advanced-AI-Enhanced-v4-Default',
         confidenceScore: 30,
         calculationStatus: 'failed',
-        calculationProgress: 0
+        calculationProgress: 0,
+        dataQuality: {
+          transactionCount: 0,
+          monthsOfData: 1,
+          completeness: 0
+        }
       };
 
       if (session) {
@@ -1311,7 +1323,9 @@ class AdvancedAIForecastService {
       
       let monthsOfData = 0;
       if (oldestTransaction && newestTransaction) {
-        monthsOfData = differenceInMonths(newestTransaction.date, oldestTransaction.date) + 1;
+        const monthsDiff = differenceInMonths(newestTransaction.date, oldestTransaction.date);
+        // Ensure we always have a valid number (at least 1)
+        monthsOfData = Math.max(1, monthsDiff + 1);
       }
       
       // Calculate completeness (percentage of months with transactions)
@@ -1328,15 +1342,15 @@ class AdvancedAIForecastService {
       }
       
       return {
-        transactionCount,
-        monthsOfData,
-        completeness
+        transactionCount: transactionCount || 0,
+        monthsOfData: monthsOfData || 1, // Ensure we always return a valid number
+        completeness: completeness || 0
       };
     } catch (error) {
       console.error('Error calculating data quality:', error);
       return {
         transactionCount: 0,
-        monthsOfData: 0,
+        monthsOfData: 1, // Default to 1 instead of 0 to avoid NaN issues
         completeness: 0
       };
     }
