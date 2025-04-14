@@ -10,6 +10,7 @@ class AdvancedAIForecastService {
     this.goalCalculationCache = new Map();
     this.MODEL_CACHE_DURATION = 2 * 60 * 60 * 1000; // Reduced to 2 hours from 6 hours
     this.trainedModels = new Map(); // Cache for trained TensorFlow models
+    this.PROGRESS_UPDATE_INTERVAL = 5; // Update progress every 5%
   }
 
   async prepareForecastData(userId, numMonths = 36) {
@@ -87,6 +88,9 @@ class AdvancedAIForecastService {
     }
 
     try {
+      // Update progress to 20%
+      await this._updateProgress(userId, 20);
+      
       const data = await this.prepareForecastData(userId);
 
       // Check if we have enough data
@@ -95,13 +99,26 @@ class AdvancedAIForecastService {
         return this._generateVariedDefaultForecast();
       }
 
+      // Update progress to 30%
+      await this._updateProgress(userId, 30);
+
       // Detect and remove outliers for more accurate predictions
       const cleanedExpenses = this._removeOutliers(data.expenses);
       const cleanedIncomes = this._removeOutliers(data.incomes);
 
+      // Update progress to 40%
+      await this._updateProgress(userId, 40);
+
       // Train TensorFlow models if needed
       await this._trainOrGetModel(userId, cleanedExpenses, 'expense', data.dates);
+      
+      // Update progress to 50%
+      await this._updateProgress(userId, 50);
+      
       await this._trainOrGetModel(userId, cleanedIncomes, 'income', data.dates);
+
+      // Update progress to 60%
+      await this._updateProgress(userId, 60);
 
       // Get average values for calculations
       const avgExpense = cleanedExpenses.reduce((sum, val) => sum + val, 0) / cleanedExpenses.length;
@@ -109,6 +126,9 @@ class AdvancedAIForecastService {
 
       // Get seasonal patterns if available
       const monthlyPatterns = this._extractMonthlyPatterns(data.dates, cleanedExpenses, cleanedIncomes);
+
+      // Update progress to 70%
+      await this._updateProgress(userId, 70);
 
       const forecastMonths = 12;
       const experimentalForecast = await Promise.all(
@@ -162,38 +182,27 @@ class AdvancedAIForecastService {
                 (1 + monthVariation.incomeVariation);
             }
 
-            // Final safety check for NaN values
-            if (isNaN(predictedExpense)) {
-              predictedExpense = avgExpense * monthPattern.expenseFactor * (1 + monthVariation.expenseVariation);
-            }
-
-            if (isNaN(predictedIncome)) {
-              predictedIncome = avgIncome * monthPattern.incomeFactor * (1 + monthVariation.incomeVariation);
-            }
-
-            // Apply advanced seasonality and trend corrections with additional variation
-            const seasonalityFactor = this._calculateAdvancedSeasonalityFactor(cleanedExpenses, i, data.dates);
-            const expenseTrendFactor =
-              this._calculateAdvancedTrendFactor(cleanedExpenses) + monthVariation.trendVariation;
-            const incomeTrendFactor =
-              this._calculateAdvancedTrendFactor(cleanedIncomes) + monthVariation.trendVariation;
-
-            // Calculate with confidence intervals for better risk assessment
-            const { adjustedExpense, expenseConfidence } = this._adjustWithConfidence(
+            // Calculate confidence based on data quality and prediction method
+            const expenseConfidence = this._calculateConfidence(
               predictedExpense,
-              seasonalityFactor,
-              expenseTrendFactor,
+              avgExpense,
+              data.expenses.length,
+              i,
               'expense',
             );
-
-            const { adjustedIncome, incomeConfidence } = this._adjustWithConfidence(
+            const incomeConfidence = this._calculateConfidence(
               predictedIncome,
-              seasonalityFactor,
-              incomeTrendFactor,
+              avgIncome,
+              data.incomes.length,
+              i,
               'income',
             );
 
-            // Safety check for NaN values after adjustments
+            // Adjust predictions based on confidence
+            const adjustedExpense = this._adjustPredictionBasedOnConfidence(predictedExpense, avgExpense, expenseConfidence);
+            const adjustedIncome = this._adjustPredictionBasedOnConfidence(predictedIncome, avgIncome, incomeConfidence);
+
+            // Ensure values are safe
             const safeExpense = isNaN(adjustedExpense)
               ? avgExpense * (1 + monthVariation.expenseVariation)
               : adjustedExpense;
@@ -247,10 +256,16 @@ class AdvancedAIForecastService {
         }),
       );
 
+      // Update progress to 90%
+      await this._updateProgress(userId, 90);
+
       this.forecastCache.set(cacheKey, {
         data: experimentalForecast,
         timestamp: Date.now(),
       });
+
+      // Update progress to 100%
+      await this._updateProgress(userId, 100);
 
       return experimentalForecast;
     } catch (error) {
@@ -258,6 +273,32 @@ class AdvancedAIForecastService {
       // Return varied default values in case of error
       return this._generateVariedDefaultForecast();
     }
+  }
+
+  // Helper method to update progress
+  async _updateProgress(userId, progress) {
+    try {
+      await ForecastCollection.findOneAndUpdate(
+        { userId },
+        { 
+          calculationProgress: progress,
+          calculationStatus: progress < 100 ? 'in_progress' : 'completed'
+        },
+        { upsert: true }
+      );
+    } catch (error) {
+      console.error('Error updating progress:', error);
+    }
+  }
+
+  // Helper method to adjust prediction based on confidence
+  _adjustPredictionBasedOnConfidence(prediction, average, confidence) {
+    // If confidence is low, blend prediction with average
+    if (confidence < 70) {
+      const blendFactor = confidence / 100;
+      return prediction * blendFactor + average * (1 - blendFactor);
+    }
+    return prediction;
   }
 
   async _trainOrGetModel(userId, series, type, dates) {
@@ -586,6 +627,8 @@ class AdvancedAIForecastService {
 
   async updateForecasts(userId, session = null) {
     try {
+      const startTime = Date.now();
+      
       // Clear the goal calculation cache to ensure fresh forecasts after transactions
       this.goalCalculationCache.delete(`goal_${userId}`);
 
@@ -604,13 +647,20 @@ class AdvancedAIForecastService {
       const validatedGoalForecast = goalForecast ? this._validateGoalForecastData(goalForecast) : null;
 
       const confidenceScore = this._calculateOverallConfidence(validatedForecasts);
+      
+      // Calculate data quality metrics
+      const dataQuality = await this._calculateDataQuality(userId);
 
       const updateOperation = {
         budgetForecasts: validatedForecasts,
         goalForecast: validatedGoalForecast,
         lastUpdated: new Date(),
-        forecastMethod: 'Advanced-AI-Enhanced-v3', // Updated version
+        forecastMethod: 'Advanced-AI-Enhanced-v4', // Updated version
         confidenceScore: isNaN(confidenceScore) ? 50 : confidenceScore,
+        calculationStatus: 'completed',
+        calculationProgress: 100,
+        calculationTime: Date.now() - startTime,
+        dataQuality
       };
 
       if (session) {
@@ -626,8 +676,10 @@ class AdvancedAIForecastService {
         budgetForecasts: defaultForecasts,
         goalForecast: null,
         lastUpdated: new Date(),
-        forecastMethod: 'Advanced-AI-Enhanced-v3-Default',
+        forecastMethod: 'Advanced-AI-Enhanced-v4-Default',
         confidenceScore: 30,
+        calculationStatus: 'failed',
+        calculationProgress: 0
       };
 
       if (session) {
@@ -1245,6 +1297,49 @@ class AdvancedAIForecastService {
 
   _generateVariedDefaultForecast() {
     return Array.from({ length: 12 }, (_, i) => this._generateVariedDefaultMonthForecast(i));
+  }
+
+  // Calculate data quality metrics
+  async _calculateDataQuality(userId) {
+    try {
+      // Get transaction count
+      const transactionCount = await TransactionCollection.countDocuments({ userId });
+      
+      // Get date range of transactions
+      const oldestTransaction = await TransactionCollection.findOne({ userId }, { sort: { date: 1 } });
+      const newestTransaction = await TransactionCollection.findOne({ userId }, { sort: { date: -1 } });
+      
+      let monthsOfData = 0;
+      if (oldestTransaction && newestTransaction) {
+        monthsOfData = differenceInMonths(newestTransaction.date, oldestTransaction.date) + 1;
+      }
+      
+      // Calculate completeness (percentage of months with transactions)
+      let completeness = 0;
+      if (monthsOfData > 0) {
+        const monthsWithTransactions = await TransactionCollection.aggregate([
+          { $match: { userId } },
+          { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$date' } } } },
+          { $count: 'count' }
+        ]);
+        
+        const monthCount = monthsWithTransactions.length > 0 ? monthsWithTransactions[0].count : 0;
+        completeness = Math.min(100, Math.round((monthCount / monthsOfData) * 100));
+      }
+      
+      return {
+        transactionCount,
+        monthsOfData,
+        completeness
+      };
+    } catch (error) {
+      console.error('Error calculating data quality:', error);
+      return {
+        transactionCount: 0,
+        monthsOfData: 0,
+        completeness: 0
+      };
+    }
   }
 }
 

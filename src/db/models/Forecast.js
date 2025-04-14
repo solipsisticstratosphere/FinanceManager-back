@@ -19,6 +19,22 @@ const riskFactorSchema = new mongoose.Schema(
   { _id: false }, // Don't create _id for subdocuments
 );
 
+// Define the quick estimate schema for immediate display
+const quickEstimateSchema = new mongoose.Schema(
+  {
+    monthStr: String,
+    projectedExpense: Number,
+    projectedIncome: Number,
+    projectedBalance: Number,
+    confidence: Number,
+    lastCalculated: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { _id: false },
+);
+
 const forecastSchema = new mongoose.Schema(
   {
     userId: {
@@ -45,6 +61,20 @@ const forecastSchema = new mongoose.Schema(
         riskAssessment: Number,
       },
     ],
+    // Quick estimates for immediate display
+    quickEstimates: [quickEstimateSchema],
+    // Progressive loading status
+    calculationStatus: {
+      type: String,
+      enum: ['pending', 'in_progress', 'completed', 'failed'],
+      default: 'pending',
+    },
+    calculationProgress: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100,
+    },
     goalForecast: {
       goalId: {
         type: mongoose.Schema.Types.ObjectId,
@@ -58,6 +88,16 @@ const forecastSchema = new mongoose.Schema(
       savingsVariability: Number,
       probability: Number,
       riskFactors: [riskFactorSchema],
+      // Quick goal estimate for immediate display
+      quickEstimate: {
+        expectedMonthsToGoal: Number,
+        monthlySavings: Number,
+        probability: Number,
+        lastCalculated: {
+          type: Date,
+          default: Date.now,
+        },
+      },
     },
     lastUpdated: {
       type: Date,
@@ -65,14 +105,28 @@ const forecastSchema = new mongoose.Schema(
     },
     forecastMethod: {
       type: String,
-      default: 'Advanced-AI-Enhanced-v3',
+      default: 'Advanced-AI-Enhanced-v4',
     },
     confidenceScore: {
       type: Number,
       default: 50,
     },
+    // Performance metrics
+    calculationTime: {
+      type: Number,
+      default: 0,
+    },
+    // Data quality indicators
+    dataQuality: {
+      transactionCount: Number,
+      monthsOfData: Number,
+      completeness: Number,
+    },
   },
   { versionKey: false, timestamps: true },
 );
+
+// Add index for faster queries
+forecastSchema.index({ userId: 1, lastUpdated: -1 });
 
 export const ForecastCollection = mongoose.model('Forecast', forecastSchema);
