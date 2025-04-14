@@ -12,11 +12,15 @@ export const updateForecasts = async (userId, session = null) => {
     // First, generate quick estimates for immediate display
     const quickEstimates = await generateQuickEstimates(userId);
     
+    // Generate 30-day budget forecast
+    const thirtyDayBudget = await generateThirtyDayBudget(userId);
+    
     // Update the forecast document with quick estimates and set status to in_progress
     await ForecastCollection.findOneAndUpdate(
       { userId },
       { 
         quickEstimates,
+        thirtyDayBudget,
         calculationStatus: 'in_progress',
         calculationProgress: 10,
         lastUpdated: new Date()
@@ -139,6 +143,94 @@ export const generateQuickEstimates = async (userId) => {
   }
 };
 
+// Generate 30-day budget forecast
+export const generateThirtyDayBudget = async (userId) => {
+  try {
+    const startTime = Date.now();
+    
+    // Get recent transactions for analysis
+    const recentTransactions = await TransactionCollection.find({
+      userId,
+      date: { $gte: subMonths(new Date(), 3) }
+    }).sort({ date: -1 });
+    
+    // Calculate average monthly income and expenses
+    const monthlyData = {};
+    
+    recentTransactions.forEach(transaction => {
+      const monthStr = format(transaction.date, 'yyyy-MM');
+      
+      if (!monthlyData[monthStr]) {
+        monthlyData[monthStr] = {
+          income: 0,
+          expense: 0,
+          count: 0
+        };
+      }
+      
+      if (transaction.type === 'income') {
+        monthlyData[monthStr].income += transaction.amount;
+      } else {
+        monthlyData[monthStr].expense += transaction.amount;
+      }
+      
+      monthlyData[monthStr].count++;
+    });
+    
+    // Calculate averages
+    const months = Object.keys(monthlyData);
+    let totalIncome = 0;
+    let totalExpense = 0;
+    let totalCount = 0;
+    
+    months.forEach(month => {
+      totalIncome += monthlyData[month].income;
+      totalExpense += monthlyData[month].expense;
+      totalCount += monthlyData[month].count;
+    });
+    
+    const avgIncome = months.length > 0 ? totalIncome / months.length : 0;
+    const avgExpense = months.length > 0 ? totalExpense / months.length : 0;
+    
+    // Calculate confidence based on data quality
+    const confidence = Math.min(95, Math.max(50, 
+      50 + // Base confidence
+      (months.length * 10) + // More months = higher confidence
+      (totalCount > 20 ? 10 : 0) + // More transactions = higher confidence
+      (Math.abs(avgIncome - avgExpense) > 100 ? 10 : 0) // Clear difference between income and expense
+    ));
+    
+    // Calculate 30-day projections (approximately 1 month)
+    // Apply current month's seasonal factor
+    const currentMonthNumber = parseInt(format(new Date(), 'MM'));
+    const seasonalFactor = calculateSeasonalFactor(currentMonthNumber);
+    
+    // Calculate projected values with seasonal adjustment
+    const projectedIncome = avgIncome * seasonalFactor;
+    const projectedExpense = avgExpense * seasonalFactor;
+    const projectedBalance = projectedIncome - projectedExpense;
+    
+    console.log(`30-day budget forecast generated in ${Date.now() - startTime}ms`);
+    return {
+      projectedExpense,
+      projectedIncome,
+      projectedBalance,
+      confidence,
+      lastCalculated: new Date()
+    };
+  } catch (error) {
+    console.error('Error generating 30-day budget forecast:', error);
+    // Return safe default values
+    return {
+      projectedExpense: 1000,
+      projectedIncome: 1500,
+      projectedBalance: 500,
+      confidence: 50,
+      lastCalculated: new Date()
+    };
+  }
+};
+
 // Helper function to calculate seasonal factors
 const calculateSeasonalFactor = (monthNumber) => {
   // Simple seasonal factors based on month
@@ -250,6 +342,7 @@ export const getCategoryForecasts = async (userId, specificCategory = null) => {
     return {
       categories: Object.values(categoryData),
       lastUpdated: forecast.lastUpdated,
+      thirtyDayBudget: forecast.thirtyDayBudget || null
     };
   } catch (error) {
     console.error('Error getting category forecasts:', error);
@@ -272,17 +365,19 @@ export const getQuickEstimates = async (userId) => {
     ) {
       console.log('Quick estimates missing or outdated, generating new ones');
       const quickEstimates = await generateQuickEstimates(userId);
+      const thirtyDayBudget = await generateThirtyDayBudget(userId);
       
       // Update the forecast with new quick estimates
       forecast = await ForecastCollection.findOneAndUpdate(
         { userId },
-        { quickEstimates, lastUpdated: new Date() },
+        { quickEstimates, thirtyDayBudget, lastUpdated: new Date() },
         { upsert: true, new: true }
       );
     }
 
     return {
       quickEstimates: forecast.quickEstimates || [],
+      thirtyDayBudget: forecast.thirtyDayBudget || null,
       lastUpdated: forecast.lastUpdated,
       calculationStatus: forecast.calculationStatus,
       calculationProgress: forecast.calculationProgress

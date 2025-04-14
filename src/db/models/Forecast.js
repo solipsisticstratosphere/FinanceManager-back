@@ -35,6 +35,21 @@ const quickEstimateSchema = new mongoose.Schema(
   { _id: false },
 );
 
+// Define the 30-day budget forecast schema
+const thirtyDayBudgetSchema = new mongoose.Schema(
+  {
+    projectedExpense: Number,
+    projectedIncome: Number,
+    projectedBalance: Number,
+    confidence: Number,
+    lastCalculated: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { _id: false },
+);
+
 const forecastSchema = new mongoose.Schema(
   {
     userId: {
@@ -63,6 +78,8 @@ const forecastSchema = new mongoose.Schema(
     ],
     // Quick estimates for immediate display
     quickEstimates: [quickEstimateSchema],
+    // 30-day budget forecast
+    thirtyDayBudget: thirtyDayBudgetSchema,
     // Progressive loading status
     calculationStatus: {
       type: String,
