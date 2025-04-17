@@ -11,6 +11,7 @@ export default class AdvancedAIForecastService {
     this.MODEL_CACHE_DURATION = 2 * 60 * 60 * 1000; // Reduced to 2 hours from 6 hours
     this.trainedModels = new Map(); // Cache for trained TensorFlow models
     this.PROGRESS_UPDATE_INTERVAL = 5; // Update progress every 5%
+    this.currentUserId = null; // Add currentUserId property
   }
 
   async prepareForecastData(userId, numMonths = 36) {
@@ -90,7 +91,7 @@ export default class AdvancedAIForecastService {
     try {
       // Update progress to 20%
       await this._updateProgress(userId, 20);
-      
+
       const data = await this.prepareForecastData(userId);
 
       // Check if we have enough data
@@ -111,10 +112,10 @@ export default class AdvancedAIForecastService {
 
       // Train TensorFlow models if needed
       await this._trainOrGetModel(userId, cleanedExpenses, 'expense', data.dates);
-      
+
       // Update progress to 50%
       await this._updateProgress(userId, 50);
-      
+
       await this._trainOrGetModel(userId, cleanedIncomes, 'income', data.dates);
 
       // Update progress to 60%
@@ -199,8 +200,16 @@ export default class AdvancedAIForecastService {
             );
 
             // Adjust predictions based on confidence
-            const adjustedExpense = this._adjustPredictionBasedOnConfidence(predictedExpense, avgExpense, expenseConfidence);
-            const adjustedIncome = this._adjustPredictionBasedOnConfidence(predictedIncome, avgIncome, incomeConfidence);
+            const adjustedExpense = this._adjustPredictionBasedOnConfidence(
+              predictedExpense,
+              avgExpense,
+              expenseConfidence,
+            );
+            const adjustedIncome = this._adjustPredictionBasedOnConfidence(
+              predictedIncome,
+              avgIncome,
+              incomeConfidence,
+            );
 
             // Ensure values are safe
             const safeExpense = isNaN(adjustedExpense)
@@ -280,11 +289,11 @@ export default class AdvancedAIForecastService {
     try {
       await ForecastCollection.findOneAndUpdate(
         { userId },
-        { 
+        {
           calculationProgress: progress,
-          calculationStatus: progress < 100 ? 'in_progress' : 'completed'
+          calculationStatus: progress < 100 ? 'in_progress' : 'completed',
         },
-        { upsert: true }
+        { upsert: true },
       );
     } catch (error) {
       console.error('Error updating progress:', error);
@@ -627,8 +636,9 @@ export default class AdvancedAIForecastService {
 
   async updateForecasts(userId, session = null) {
     try {
+      this.currentUserId = userId; // Set currentUserId when updating forecasts
       const startTime = Date.now();
-      
+
       // Clear the goal calculation cache to ensure fresh forecasts after transactions
       this.goalCalculationCache.delete(`goal_${userId}`);
 
@@ -647,15 +657,15 @@ export default class AdvancedAIForecastService {
       const validatedGoalForecast = goalForecast ? this._validateGoalForecastData(goalForecast) : null;
 
       const confidenceScore = this._calculateOverallConfidence(validatedForecasts);
-      
+
       // Calculate data quality metrics
       const dataQuality = await this._calculateDataQuality(userId);
-      
+
       // Ensure all data quality values are valid numbers
       const safeDataQuality = {
         transactionCount: Number(dataQuality.transactionCount) || 0,
         monthsOfData: Number(dataQuality.monthsOfData) || 1,
-        completeness: Number(dataQuality.completeness) || 0
+        completeness: Number(dataQuality.completeness) || 0,
       };
 
       const updateOperation = {
@@ -667,7 +677,7 @@ export default class AdvancedAIForecastService {
         calculationStatus: 'completed',
         calculationProgress: 100,
         calculationTime: Date.now() - startTime,
-        dataQuality: safeDataQuality
+        dataQuality: safeDataQuality,
       };
 
       if (session) {
@@ -690,8 +700,8 @@ export default class AdvancedAIForecastService {
         dataQuality: {
           transactionCount: 0,
           monthsOfData: 1,
-          completeness: 0
-        }
+          completeness: 0,
+        },
       };
 
       if (session) {
@@ -1232,6 +1242,48 @@ export default class AdvancedAIForecastService {
   async _predictCategoriesWithVariation(categoryData, monthOffset, dates, monthPattern, monthVariation) {
     const predictions = {};
 
+    // If we have no category data, try to get recent transactions to generate basic predictions
+    if (Object.keys(categoryData).length === 0) {
+      try {
+        const recentTransactions = await TransactionCollection.find({
+          userId: this.currentUserId,
+          date: { $gte: subMonths(new Date(), 3) },
+        }).sort({ date: -1 });
+
+        // Group transactions by category
+        const categoryTotals = {};
+        recentTransactions.forEach((transaction) => {
+          if (!categoryTotals[transaction.category]) {
+            categoryTotals[transaction.category] = {
+              total: 0,
+              count: 0,
+              type: transaction.type,
+            };
+          }
+          categoryTotals[transaction.category].total += transaction.amount;
+          categoryTotals[transaction.category].count += 1;
+        });
+
+        // Generate predictions based on recent transactions
+        for (const [category, data] of Object.entries(categoryTotals)) {
+          const avgAmount = data.total / data.count;
+          const variationFactor =
+            data.type === 'expense' ? monthVariation.expenseVariation : monthVariation.incomeVariation;
+          const patternFactor = data.type === 'expense' ? monthPattern.expenseFactor : monthPattern.incomeFactor;
+
+          predictions[category] = {
+            amount: Math.max(avgAmount * patternFactor * (1 + variationFactor), 0),
+            type: data.type,
+          };
+        }
+        return predictions;
+      } catch (error) {
+        console.error('Error generating basic category predictions:', error);
+        return {};
+      }
+    }
+
+    // Original prediction logic for when we have sufficient category data
     for (const [category, data] of Object.entries(categoryData)) {
       try {
         // Apply time series forecasting to individual categories
@@ -1316,42 +1368,42 @@ export default class AdvancedAIForecastService {
     try {
       // Get transaction count
       const transactionCount = await TransactionCollection.countDocuments({ userId });
-      
+
       // Get date range of transactions
       const oldestTransaction = await TransactionCollection.findOne({ userId }, { sort: { date: 1 } });
       const newestTransaction = await TransactionCollection.findOne({ userId }, { sort: { date: -1 } });
-      
+
       let monthsOfData = 0;
       if (oldestTransaction && newestTransaction) {
         const monthsDiff = differenceInMonths(newestTransaction.date, oldestTransaction.date);
         // Ensure we always have a valid number (at least 1)
         monthsOfData = Math.max(1, monthsDiff + 1);
       }
-      
+
       // Calculate completeness (percentage of months with transactions)
       let completeness = 0;
       if (monthsOfData > 0) {
         const monthsWithTransactions = await TransactionCollection.aggregate([
           { $match: { userId } },
           { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$date' } } } },
-          { $count: 'count' }
+          { $count: 'count' },
         ]);
-        
+
         const monthCount = monthsWithTransactions.length > 0 ? monthsWithTransactions[0].count : 0;
         completeness = Math.min(100, Math.round((monthCount / monthsOfData) * 100));
       }
-      
+
       return {
         transactionCount: transactionCount || 0,
         monthsOfData: monthsOfData || 1, // Ensure we always return a valid number
-        completeness: completeness || 0
+        completeness: completeness || 0,
       };
     } catch (error) {
       console.error('Error calculating data quality:', error);
       return {
         transactionCount: 0,
         monthsOfData: 1, // Default to 1 instead of 0 to avoid NaN issues
-        completeness: 0
+        completeness: 0,
       };
     }
   }
