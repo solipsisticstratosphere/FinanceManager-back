@@ -6,52 +6,42 @@ import { updateGoalProgress } from './goal.js';
 import { updateForecasts } from './forecast.js';
 
 export const addTransaction = async (transactionData) => {
-  let session = null;
   try {
     console.log('Starting transaction process with data:', JSON.stringify(transactionData));
 
-    // Validate user exists
+    // Validate user exists and get current state
     const user = await UserCollection.findById(transactionData.userId);
     if (!user) {
       console.error('User not found:', transactionData.userId);
       throw new createHttpError(404, 'User not found');
     }
 
-    // Ensure user has a balance field
-    if (typeof user.balance !== 'number') {
-      console.log('Initializing balance for new user');
-      await UserCollection.findByIdAndUpdate(transactionData.userId, { balance: 0 });
+    console.log('User found:', {
+      userId: user._id,
+      balance: user.balance,
+      lastBalanceUpdate: user.lastBalanceUpdate,
+    });
+
+    // Validate transaction data
+    const amount = Number(transactionData.amount);
+    if (isNaN(amount) || amount <= 0) {
+      throw new createHttpError(400, 'Invalid amount');
     }
 
-    const isTransactionSupported = await checkTransactionSupport();
-    console.log('Transaction support:', isTransactionSupported);
-
-    if (!isTransactionSupported) {
-      console.log('Processing without transaction support');
-      return await processWithoutTransaction(transactionData);
+    if (transactionData.type === 'expense' && user.balance < amount) {
+      throw new createHttpError(400, 'Not enough balance');
     }
 
-    session = await mongoose.startSession();
-    session.startTransaction();
-    console.log('Transaction session started');
-
-    const result = await processWithTransaction(transactionData, session);
-    await session.commitTransaction();
-    console.log('Transaction committed successfully');
-
-    return result;
+    // Process each step sequentially without MongoDB transactions
+    return await processSequentially(transactionData);
   } catch (error) {
     console.error('Transaction service error:', {
       name: error.name,
       message: error.message,
       stack: error.stack,
       data: transactionData,
+      errorDetails: error.details || error.cause || error,
     });
-
-    if (session) {
-      console.log('Aborting transaction due to error');
-      await session.abortTransaction();
-    }
 
     // Re-throw with more context
     if (error instanceof createHttpError.HttpError) {
@@ -63,69 +53,68 @@ export const addTransaction = async (transactionData) => {
       details: {
         message: error.message,
         name: error.name,
+        stack: error.stack,
       },
     });
-  } finally {
-    if (session) {
-      await session.endSession();
-      console.log('Transaction session ended');
-    }
   }
 };
 
-const checkTransactionSupport = async () => {
+const processSequentially = async (transactionData) => {
   try {
-    const status = await mongoose.connection.db.admin().command({ replSetGetStatus: 1 });
-    return !!status;
-  } catch {
-    return false;
-  }
-};
-
-const processWithoutTransaction = async (transactionData) => {
-  try {
-    console.log('Finding user:', transactionData.userId);
-    const user = await UserCollection.findById(transactionData.userId);
-
-    if (!user) {
-      console.log('User not found:', transactionData.userId);
-      throw new createHttpError(404, 'User not found');
-    }
+    console.log('Processing transaction sequentially');
 
     const amount = Number(transactionData.amount);
-    console.log('Checking balance:', { userBalance: user.balance, amount });
 
-    if (transactionData.type === 'expense' && user.balance < amount) {
-      throw new createHttpError(400, 'Not enough balance');
-    }
-
+    // Step 1: Create the transaction
     console.log('Creating transaction document');
     const transaction = await TransactionCollection.create(transactionData);
+    console.log('Transaction created:', transaction._id);
 
+    // Step 2: Update user balance
     const balanceChange = transactionData.type === 'income' ? amount : -amount;
     console.log('Updating user balance:', { balanceChange });
 
-    await UserCollection.findByIdAndUpdate(
+    const updatedUser = await UserCollection.findByIdAndUpdate(
       transactionData.userId,
       {
         $inc: { balance: balanceChange },
         lastBalanceUpdate: new Date(),
       },
-      { new: true }, // Return updated document
+      { new: true },
     );
 
-    // Update goal progress and forecasts like in processWithTransaction
-    const goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange);
-    await updateForecasts(transactionData.userId);
+    console.log('User balance updated:', {
+      newBalance: updatedUser.balance,
+      lastUpdate: updatedUser.lastBalanceUpdate,
+    });
 
-    console.log('Transaction processed successfully');
+    // Step 3: Update goal progress
+    console.log('Updating goal progress');
+    let goalUpdate = null;
+    try {
+      goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange);
+      console.log('Goal progress updated successfully');
+    } catch (goalError) {
+      console.error('Error updating goal progress (continuing):', goalError.message);
+    }
+
+    // Step 4: Update forecasts
+    console.log('Updating forecasts');
+    try {
+      await updateForecasts(transactionData.userId);
+      console.log('Forecasts updated successfully');
+    } catch (forecastError) {
+      console.error('Error updating forecasts (non-critical):', forecastError.message);
+      // Continue processing - forecast failure shouldn't stop transaction
+    }
+
     return {
       transaction,
       goalAchieved: goalUpdate?.isAchieved || false,
       updatedGoal: goalUpdate?.goal,
     };
   } catch (error) {
-    console.error('Process without transaction error:', {
+    console.error('Sequential processing error:', {
       name: error.name,
       message: error.message,
       stack: error.stack,
@@ -135,40 +124,7 @@ const processWithoutTransaction = async (transactionData) => {
   }
 };
 
-const processWithTransaction = async (transactionData, session) => {
-  const user = await UserCollection.findById(transactionData.userId).session(session);
-  if (!user) {
-    throw new createHttpError(404, 'User not found');
-  }
-
-  const amount = Number(transactionData.amount);
-  if (transactionData.type === 'expense' && user.balance < amount) {
-    throw new createHttpError(400, 'Not enough balance');
-  }
-
-  const transaction = await TransactionCollection.create([transactionData], { session });
-  const balanceChange = transactionData.type === 'income' ? amount : -amount;
-
-  await UserCollection.findByIdAndUpdate(
-    transactionData.userId,
-    {
-      $inc: { balance: balanceChange },
-      lastBalanceUpdate: new Date(),
-    },
-    { session, new: true },
-  );
-
-  // Важно: передаем сессию во все операции внутри транзакции
-  const goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange, session);
-  await updateForecasts(transactionData.userId, session); // Добавляем session параметр
-
-  return {
-    transaction: transaction[0],
-    goalAchieved: goalUpdate?.isAchieved || false,
-    updatedGoal: goalUpdate?.goal,
-  };
-};
-
+// Keep these for compatibility with existing code
 export const getTransactions = async (userId) => {
   try {
     return await TransactionCollection.find({ userId }).sort({ date: -1 });
