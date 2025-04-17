@@ -10,6 +10,19 @@ export const addTransaction = async (transactionData) => {
   try {
     console.log('Starting transaction process with data:', JSON.stringify(transactionData));
 
+    // Validate user exists
+    const user = await UserCollection.findById(transactionData.userId);
+    if (!user) {
+      console.error('User not found:', transactionData.userId);
+      throw new createHttpError(404, 'User not found');
+    }
+
+    // Ensure user has a balance field
+    if (typeof user.balance !== 'number') {
+      console.log('Initializing balance for new user');
+      await UserCollection.findByIdAndUpdate(transactionData.userId, { balance: 0 });
+    }
+
     const isTransactionSupported = await checkTransactionSupport();
     console.log('Transaction support:', isTransactionSupported);
 
@@ -39,7 +52,19 @@ export const addTransaction = async (transactionData) => {
       console.log('Aborting transaction due to error');
       await session.abortTransaction();
     }
-    throw error;
+
+    // Re-throw with more context
+    if (error instanceof createHttpError.HttpError) {
+      throw error;
+    }
+
+    throw new createHttpError(500, 'Failed to process transaction', {
+      cause: error,
+      details: {
+        message: error.message,
+        name: error.name,
+      },
+    });
   } finally {
     if (session) {
       await session.endSession();
@@ -130,7 +155,7 @@ const processWithTransaction = async (transactionData, session) => {
       $inc: { balance: balanceChange },
       lastBalanceUpdate: new Date(),
     },
-    { session, new: true }
+    { session, new: true },
   );
 
   // Важно: передаем сессию во все операции внутри транзакции

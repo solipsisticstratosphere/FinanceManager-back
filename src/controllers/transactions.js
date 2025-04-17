@@ -7,21 +7,30 @@ export const addTransactionController = async (req, res, next) => {
     const { _id: userId } = req.user;
 
     // Validate request body against schema
-    const { error, value } = transactionValidationSchema.validate(req.body);
+    const { error, value } = transactionValidationSchema.validate(req.body, {
+      abortEarly: false,
+      stripUnknown: true,
+    });
+
     if (error) {
+      const errorMessages = error.details.map((detail) => ({
+        field: detail.path.join('.'),
+        message: detail.message,
+      }));
+
       return res.status(400).json({
         status: 'error',
-        message: error.details[0].message,
+        message: 'Validation error',
         data: null,
+        errors: errorMessages,
       });
     }
 
     console.log('Received transaction request:', {
-      body: req.body,
-      userId: req.user?._id,
+      body: value,
+      userId,
     });
 
-    console.log('Validation passed, processing transaction');
     const result = await addTransaction({ ...value, userId });
 
     const response = {
@@ -56,7 +65,10 @@ export const addTransactionController = async (req, res, next) => {
         status: 'error',
         message: 'Validation error',
         data: null,
-        errors: Object.values(error.errors).map((err) => err.message),
+        errors: Object.values(error.errors).map((err) => ({
+          field: err.path,
+          message: err.message,
+        })),
       });
     }
 
@@ -81,7 +93,13 @@ export const addTransactionController = async (req, res, next) => {
       status: 'error',
       message: 'Internal server error',
       data: null,
-      errorDetails: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      errorDetails:
+        process.env.NODE_ENV === 'development'
+          ? {
+              message: error.message,
+              name: error.name,
+            }
+          : undefined,
     });
   }
 };
