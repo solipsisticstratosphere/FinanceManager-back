@@ -18,63 +18,78 @@ export default class AdvancedAIForecastService {
     // Extended to 36 months for better pattern recognition
     const startDate = subMonths(new Date(), numMonths);
 
-    const transactions = await TransactionCollection.aggregate([
-      {
-        $match: {
-          userId,
-          date: { $gte: startDate },
-        },
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m', date: '$date' } },
-          expenses: {
-            $sum: {
-              $cond: [{ $eq: ['$type', 'expense'] }, '$amount', 0],
-            },
-          },
-          incomes: {
-            $sum: {
-              $cond: [{ $eq: ['$type', 'income'] }, '$amount', 0],
-            },
-          },
-          transactionCount: { $sum: 1 },
-          categories: { $addToSet: '$category' },
-          // Additional data for improved analysis
-          categoryBreakdown: {
-            $push: {
-              $cond: [{ $ne: ['$category', null] }, { category: '$category', amount: '$amount', type: '$type' }, null],
-            },
-          },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
+    // First, get all transactions for the user
+    const transactions = await TransactionCollection.find({
+      userId,
+      date: { $gte: startDate },
+    }).sort({ date: 1 });
+
+    // Group transactions by month
+    const monthlyData = {};
+    transactions.forEach((transaction) => {
+      const monthStr = format(transaction.date, 'yyyy-MM');
+
+      if (!monthlyData[monthStr]) {
+        monthlyData[monthStr] = {
+          expenses: 0,
+          incomes: 0,
+          transactionCount: 0,
+          categories: new Set(),
+          categoryBreakdown: {},
+        };
+      }
+
+      // Update monthly totals
+      if (transaction.type === 'expense') {
+        monthlyData[monthStr].expenses += transaction.amount;
+      } else {
+        monthlyData[monthStr].incomes += transaction.amount;
+      }
+      monthlyData[monthStr].transactionCount++;
+
+      // Add category to set
+      monthlyData[monthStr].categories.add(transaction.category);
+
+      // Update category breakdown
+      if (!monthlyData[monthStr].categoryBreakdown[transaction.category]) {
+        monthlyData[monthStr].categoryBreakdown[transaction.category] = {
+          amount: 0,
+          type: transaction.type,
+        };
+      }
+      monthlyData[monthStr].categoryBreakdown[transaction.category].amount += transaction.amount;
+    });
+
+    // Convert to arrays for easier processing
+    const dates = Object.keys(monthlyData).sort();
+    const expenses = dates.map((date) => monthlyData[date].expenses);
+    const incomes = dates.map((date) => monthlyData[date].incomes);
+    const transactionCounts = dates.map((date) => monthlyData[date].transactionCount);
+    const categories = [...new Set(dates.flatMap((date) => [...monthlyData[date].categories]))];
 
     // Process category data for more detailed analysis
     const categoryData = {};
-    transactions.forEach((t) => {
-      const validCategories = t.categoryBreakdown.filter((c) => c !== null);
-      validCategories.forEach((c) => {
-        if (!categoryData[c.category]) {
-          categoryData[c.category] = {
-            type: c.type,
-            amounts: Array(transactions.length).fill(0),
-          };
-        }
-        const index = transactions.findIndex((tr) => tr._id === t._id);
-        if (index !== -1) {
-          categoryData[c.category].amounts[index] += c.amount;
+    categories.forEach((category) => {
+      categoryData[category] = {
+        type: null,
+        amounts: Array(dates.length).fill(0),
+      };
+
+      dates.forEach((date, index) => {
+        const breakdown = monthlyData[date].categoryBreakdown[category];
+        if (breakdown) {
+          categoryData[category].amounts[index] = breakdown.amount;
+          categoryData[category].type = breakdown.type;
         }
       });
     });
 
     return {
-      expenses: transactions.map((t) => t.expenses),
-      incomes: transactions.map((t) => t.incomes),
-      dates: transactions.map((t) => t._id),
-      transactionCounts: transactions.map((t) => t.transactionCount),
-      categories: transactions.flatMap((t) => t.categories),
+      expenses,
+      incomes,
+      dates,
+      transactionCounts,
+      categories,
       categoryData,
       rawTransactions: transactions,
     };
@@ -1283,40 +1298,31 @@ export default class AdvancedAIForecastService {
       }
     }
 
-    // Original prediction logic for when we have sufficient category data
+    // Process each category
     for (const [category, data] of Object.entries(categoryData)) {
       try {
-        // Apply time series forecasting to individual categories
-        const prediction = this._arimaBasedPrediction(data.amounts, monthOffset);
-        const seasonalFactor = this._calculateAdvancedSeasonalityFactor(data.amounts, monthOffset, dates);
-        const trendFactor = this._calculateAdvancedTrendFactor(data.amounts);
+        // Calculate base amount from available data
+        const validAmounts = data.amounts.filter((amount) => amount > 0);
+        const baseAmount =
+          validAmounts.length > 0 ? validAmounts.reduce((sum, val) => sum + val, 0) / validAmounts.length : 0;
 
-        // Apply month-specific variation
+        // Apply variation and pattern factors
         const variationFactor =
           data.type === 'expense' ? monthVariation.expenseVariation : monthVariation.incomeVariation;
-
-        // Apply monthly pattern factor
         const patternFactor = data.type === 'expense' ? monthPattern.expenseFactor : monthPattern.incomeFactor;
 
-        // Adjust prediction with seasonality, trend and monthly variation
-        const adjustedPrediction =
-          prediction * (1 + seasonalFactor + trendFactor) * patternFactor * (1 + variationFactor);
+        // Calculate prediction with variation
+        const prediction = baseAmount * patternFactor * (1 + variationFactor);
 
         predictions[category] = {
-          amount: Math.max(adjustedPrediction, 0),
+          amount: Math.max(prediction, 0),
           type: data.type,
         };
       } catch (error) {
-        // In case of error, fall back to simple prediction
-        const baseAmount =
-          data.amounts.length > 0
-            ? data.amounts.reduce((sum, val) => sum + (isNaN(val) ? 0 : val), 0) / data.amounts.length
-            : data.type === 'expense'
-            ? 1000
-            : 1500;
-
+        console.error(`Error predicting for category ${category}:`, error);
+        // Fallback to simple prediction
         predictions[category] = {
-          amount: baseAmount * (1 + (Math.random() * 0.2 - 0.1)),
+          amount: data.type === 'expense' ? 1000 : 1500,
           type: data.type,
         };
       }
