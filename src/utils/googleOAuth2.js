@@ -18,13 +18,13 @@ const oauthConfig = {
 const googleOauthClient = new OAuth2Client({
   clientId: env('GOOGLE_AUTH_CLIENT_ID'),
   clientSecret: env('GOOGLE_AUTH_CLIENT_SECRET'),
-  redirectUri: oauthConfig.web.redirect_uris[1],
+  redirectUri: oauthConfig.web.redirect_uris[0],
 });
 
 export const generateAuthUrl = () =>
   googleOauthClient.generateAuthUrl({
     scope: ['https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile'],
-    redirect_uri: oauthConfig.web.redirect_uris[1],
+    redirect_uri: oauthConfig.web.redirect_uris[0],
   });
 
 export const validateCode = async (code) => {
