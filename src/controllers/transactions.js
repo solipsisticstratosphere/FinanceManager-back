@@ -45,6 +45,9 @@ export const addTransactionController = async (req, res, next) => {
           description: result.transaction.description,
           date: result.transaction.date,
         },
+        forecastUpdate: result.forecastUpdate || null,
+        goalAchieved: result.goalAchieved || false,
+        updatedGoal: result.updatedGoal || null,
       },
     };
 

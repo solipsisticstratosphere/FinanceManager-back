@@ -69,6 +69,7 @@ const processSequentially = async (transactionData) => {
 
     const amount = Number(transactionData.amount);
     const userId = transactionData.userId;
+    const transactionType = transactionData.type; // 'income' or 'expense'
 
     console.log('Creating transaction document');
     const transaction = await TransactionCollection.create(transactionData);
@@ -103,12 +104,18 @@ const processSequentially = async (transactionData) => {
     try {
       console.log(`Invalidating caches for user ${userId} before forecast update...`);
 
-      // Invalidate LSTM model caches to force retraining with new transaction data
+      // Invalidate all model caches to force retraining with new transaction data
+      // This is important for the model to learn from the new transaction
       const expenseModelKey = `model_${userId}_expense_lstm_w${DEFAULT_EXPENSE_WINDOW_SIZE}`;
       const incomeModelKey = `model_${userId}_income_lstm_w${DEFAULT_INCOME_WINDOW_SIZE}`;
 
-      forecastService.trainedModels.delete(expenseModelKey);
-      forecastService.trainedModels.delete(incomeModelKey);
+      // Delete all model variants to ensure fresh training
+      for (const key of [...forecastService.trainedModels.keys()]) {
+        if (key.startsWith(`model_${userId}`)) {
+          console.log(`Invalidating model cache: ${key}`);
+          forecastService.trainedModels.delete(key);
+        }
+      }
 
       // Clear forecast cache to ensure new forecasts will be generated
       forecastService.forecastCache.delete(`forecast_${userId}`);
@@ -121,7 +128,8 @@ const processSequentially = async (transactionData) => {
       console.error(`Error invalidating caches for user ${userId} (continuing):`, cacheError);
     }
 
-    console.log('Updating forecasts');
+    console.log('Updating forecasts with new transaction data');
+    let forecastUpdate = null;
     try {
       // Use updateForecastsService with forceUpdate=true to ensure model retraining
       const updatedForecasts = await updateForecastsService(userId, null, true);
@@ -130,14 +138,37 @@ const processSequentially = async (transactionData) => {
         confidenceScore: updatedForecasts.confidenceScore,
         lastUpdated: updatedForecasts.lastUpdated,
       });
+
+      // Extract the first month forecast to return to the client
+      const nextMonthForecast =
+        updatedForecasts.budgetForecasts && updatedForecasts.budgetForecasts.length > 0
+          ? updatedForecasts.budgetForecasts[0]
+          : null;
+
+      // Prepare forecast update summary
+      forecastUpdate = {
+        updated: true,
+        method: updatedForecasts.forecastMethod,
+        confidence: updatedForecasts.confidenceScore,
+        nextMonth: nextMonthForecast
+          ? {
+              month: nextMonthForecast.monthStr,
+              projectedIncome: nextMonthForecast.projectedIncome,
+              projectedExpense: nextMonthForecast.projectedExpense,
+              projectedBalance: nextMonthForecast.projectedBalance,
+            }
+          : null,
+      };
     } catch (forecastError) {
       console.error('Error updating forecasts (non-critical):', forecastError.message);
+      forecastUpdate = { updated: false, error: forecastError.message };
     }
 
     return {
       transaction,
       goalAchieved: goalUpdate?.isAchieved || false,
       updatedGoal: goalUpdate?.goal,
+      forecastUpdate, // Include forecast update information in the response
     };
   } catch (error) {
     console.error('Sequential processing error:', {

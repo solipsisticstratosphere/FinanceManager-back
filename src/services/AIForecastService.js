@@ -101,18 +101,24 @@ export default class AdvancedAIForecastService {
     const cachedForecast = this.forecastCache.get(cacheKey);
 
     if (cachedForecast && Date.now() - cachedForecast.timestamp < this.MODEL_CACHE_DURATION) {
+      console.log(`Using cached forecast for user ${userId}, created ${Date.now() - cachedForecast.timestamp}ms ago`);
       return cachedForecast.data;
     }
 
+    console.log(`Generating new financial forecast for user ${userId}`);
     try {
       // Update progress to 20%
       await this._updateProgress(userId, 20);
 
       const data = await this.prepareForecastData(userId);
+      console.log(
+        `Prepared forecast data: ${data.expenses.length} expense records, ${data.incomes.length} income records`,
+      );
 
       // Check if we have enough data
       if (!data.expenses.length || !data.incomes.length) {
         // Return varied default values if no data
+        console.log(`Insufficient transaction data for user ${userId}, using default forecast`);
         return this._generateVariedDefaultForecast();
       }
 
@@ -127,12 +133,14 @@ export default class AdvancedAIForecastService {
       await this._updateProgress(userId, 40);
 
       // Train TensorFlow models if needed
-      await this._trainOrGetModel(userId, cleanedExpenses, 'expense', data.dates);
+      const expenseModel = await this._trainOrGetModel(userId, cleanedExpenses, 'expense', data.dates);
+      console.log(`Expense model ${expenseModel ? 'successfully trained/loaded' : 'could not be trained'}`);
 
       // Update progress to 50%
       await this._updateProgress(userId, 50);
 
-      await this._trainOrGetModel(userId, cleanedIncomes, 'income', data.dates);
+      const incomeModel = await this._trainOrGetModel(userId, cleanedIncomes, 'income', data.dates);
+      console.log(`Income model ${incomeModel ? 'successfully trained/loaded' : 'could not be trained'}`);
 
       // Update progress to 60%
       await this._updateProgress(userId, 60);
@@ -140,6 +148,7 @@ export default class AdvancedAIForecastService {
       // Get average values for calculations
       const avgExpense = cleanedExpenses.reduce((sum, val) => sum + val, 0) / cleanedExpenses.length;
       const avgIncome = cleanedIncomes.reduce((sum, val) => sum + val, 0) / cleanedIncomes.length;
+      console.log(`Average expense: ${avgExpense}, Average income: ${avgIncome}`);
 
       // Get seasonal patterns if available
       const monthlyPatterns = this._extractMonthlyPatterns(data.dates, cleanedExpenses, cleanedIncomes);
@@ -163,6 +172,13 @@ export default class AdvancedAIForecastService {
             const monthVariation = this._getMonthVariation(i, monthNumber);
 
             // Get category-based predictions for more accuracy
+            const categoryPredictions = await this._predictCategoriesWithVariation(
+              data.categoryData,
+              i,
+              data.dates,
+              monthPattern,
+              monthVariation,
+            );
 
             // Use TensorFlow for expense/income predictions with monthly variation
             let predictedExpense = await this._tfPredict(userId, 'expense', i + 1);
@@ -171,10 +187,12 @@ export default class AdvancedAIForecastService {
             // Apply month-specific variation
             if (predictedExpense && !isNaN(predictedExpense)) {
               predictedExpense = predictedExpense * monthPattern.expenseFactor * (1 + monthVariation.expenseVariation);
+              console.log(`Month ${i + 1} (${monthStr}): TF prediction for expense: ${predictedExpense}`);
             }
 
             if (predictedIncome && !isNaN(predictedIncome)) {
               predictedIncome = predictedIncome * monthPattern.incomeFactor * (1 + monthVariation.incomeVariation);
+              console.log(`Month ${i + 1} (${monthStr}): TF prediction for income: ${predictedIncome}`);
             }
 
             // Fallback to statistical prediction if TF model is not reliable
@@ -183,6 +201,7 @@ export default class AdvancedAIForecastService {
                 this._arimaBasedPrediction(cleanedExpenses, i) *
                 monthPattern.expenseFactor *
                 (1 + monthVariation.expenseVariation);
+              console.log(`Month ${i + 1}: Using ARIMA fallback for expense: ${predictedExpense}`);
             }
 
             if (!predictedIncome || predictedIncome <= 0 || isNaN(predictedIncome)) {
@@ -190,6 +209,7 @@ export default class AdvancedAIForecastService {
                 this._arimaBasedPrediction(cleanedIncomes, i) *
                 monthPattern.incomeFactor *
                 (1 + monthVariation.incomeVariation);
+              console.log(`Month ${i + 1}: Using ARIMA fallback for income: ${predictedIncome}`);
             }
 
             // Calculate confidence based on data quality and prediction method
@@ -277,6 +297,9 @@ export default class AdvancedAIForecastService {
       // Update progress to 90%
       await this._updateProgress(userId, 90);
 
+      console.log(
+        `Setting forecast cache for user ${userId} with ${experimentalForecast.length} months of predictions`,
+      );
       this.forecastCache.set(cacheKey, {
         data: experimentalForecast,
         timestamp: Date.now(),
@@ -1464,5 +1487,24 @@ export default class AdvancedAIForecastService {
         completeness: 0,
       };
     }
+  }
+
+  // Helper method to calculate confidence based on data and prediction
+  _calculateConfidence(prediction, average, dataPoints, monthOffset, type) {
+    // Base confidence factors
+    const dataQualityFactor = Math.min(1, Math.max(0.5, dataPoints / 12)); // More data = higher confidence
+    const timeDecayFactor = Math.max(0.5, 1 - monthOffset * 0.03); // Further in future = lower confidence
+
+    // Check prediction quality
+    const predictionRatio = prediction / (average || 1);
+    const plausibilityFactor = predictionRatio > 0.3 && predictionRatio < 3 ? 1 : 0.7; // Penalize extreme predictions
+
+    // Calculate final confidence
+    const baseConfidence = 80 * dataQualityFactor * timeDecayFactor * plausibilityFactor;
+
+    // Add type-specific adjustments (income is generally more predictable than expenses)
+    const typeAdjustment = type === 'income' ? 5 : 0;
+
+    return Math.min(95, Math.max(60, baseConfidence + typeAdjustment));
   }
 }
