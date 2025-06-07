@@ -1,15 +1,20 @@
+// services/transactions.js
 import mongoose from 'mongoose';
 import UserCollection from '../db/models/User.js';
 import createHttpError from 'http-errors';
 import { TransactionCollection } from '../db/models/Transaction.js';
 import { updateGoalProgress } from './goal.js';
-import { updateForecasts } from './forecast.js';
+
+import AdvancedAIForecastService from './AIForecastService.js';
+const forecastService = new AdvancedAIForecastService();
+
+const DEFAULT_EXPENSE_WINDOW_SIZE = 3;
+const DEFAULT_INCOME_WINDOW_SIZE = 3;
 
 export const addTransaction = async (transactionData) => {
   try {
     console.log('Starting transaction process with data:', JSON.stringify(transactionData));
 
-    // Validate user exists and get current state
     const user = await UserCollection.findById(transactionData.userId);
     if (!user) {
       console.error('User not found:', transactionData.userId);
@@ -22,7 +27,6 @@ export const addTransaction = async (transactionData) => {
       lastBalanceUpdate: user.lastBalanceUpdate,
     });
 
-    // Validate transaction data
     const amount = Number(transactionData.amount);
     if (isNaN(amount) || amount <= 0) {
       throw new createHttpError(400, 'Invalid amount');
@@ -32,7 +36,6 @@ export const addTransaction = async (transactionData) => {
       throw new createHttpError(400, 'Not enough balance');
     }
 
-    // Process each step sequentially without MongoDB transactions
     return await processSequentially(transactionData);
   } catch (error) {
     console.error('Transaction service error:', {
@@ -43,7 +46,6 @@ export const addTransaction = async (transactionData) => {
       errorDetails: error.details || error.cause || error,
     });
 
-    // Re-throw with more context
     if (error instanceof createHttpError.HttpError) {
       throw error;
     }
@@ -64,18 +66,17 @@ const processSequentially = async (transactionData) => {
     console.log('Processing transaction sequentially');
 
     const amount = Number(transactionData.amount);
+    const userId = transactionData.userId;
 
-    // Step 1: Create the transaction
     console.log('Creating transaction document');
     const transaction = await TransactionCollection.create(transactionData);
     console.log('Transaction created:', transaction._id);
 
-    // Step 2: Update user balance
     const balanceChange = transactionData.type === 'income' ? amount : -amount;
     console.log('Updating user balance:', { balanceChange });
 
     const updatedUser = await UserCollection.findByIdAndUpdate(
-      transactionData.userId,
+      userId,
       {
         $inc: { balance: balanceChange },
         lastBalanceUpdate: new Date(),
@@ -88,24 +89,39 @@ const processSequentially = async (transactionData) => {
       lastUpdate: updatedUser.lastBalanceUpdate,
     });
 
-    // Step 3: Update goal progress
     console.log('Updating goal progress');
     let goalUpdate = null;
     try {
-      goalUpdate = await updateGoalProgress(transactionData.userId, balanceChange);
+      goalUpdate = await updateGoalProgress(userId, balanceChange);
       console.log('Goal progress updated successfully');
     } catch (goalError) {
       console.error('Error updating goal progress (continuing):', goalError.message);
     }
 
-    // Step 4: Update forecasts
+    try {
+      console.log(`Invalidating caches for user ${userId} before forecast update...`);
+
+      const expenseModelKey = `model_${userId}_expense_lstm_w${DEFAULT_EXPENSE_WINDOW_SIZE}`;
+      const incomeModelKey = `model_${userId}_income_lstm_w${DEFAULT_INCOME_WINDOW_SIZE}`;
+
+      forecastService.trainedModels.delete(expenseModelKey);
+      forecastService.trainedModels.delete(incomeModelKey);
+      forecastService.forecastCache.delete(`forecast_${userId}`);
+
+      forecastService.goalCalculationCache.delete(`goal_${userId}`);
+
+      console.log(`Caches invalidated for user ${userId}.`);
+    } catch (cacheError) {
+      console.error(`Error invalidating caches for user ${userId} (continuing):`, cacheError);
+    }
+
     console.log('Updating forecasts');
     try {
-      await updateForecasts(transactionData.userId);
+      await forecastService.updateForecasts(userId);
+
       console.log('Forecasts updated successfully');
     } catch (forecastError) {
       console.error('Error updating forecasts (non-critical):', forecastError.message);
-      // Continue processing - forecast failure shouldn't stop transaction
     }
 
     return {
@@ -124,7 +140,6 @@ const processSequentially = async (transactionData) => {
   }
 };
 
-// Keep these for compatibility with existing code
 export const getTransactions = async (userId) => {
   try {
     return await TransactionCollection.find({ userId }).sort({ date: -1 });
