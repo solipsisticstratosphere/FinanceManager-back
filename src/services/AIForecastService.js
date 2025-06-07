@@ -7,11 +7,12 @@ import { addMonths, subMonths, format, differenceInMonths, parseISO, isValid } f
 export default class AdvancedAIForecastService {
   constructor() {
     this.forecastCache = new Map();
+    AdvancedAIForecastService;
     this.goalCalculationCache = new Map();
-    this.MODEL_CACHE_DURATION = 2 * 60 * 60 * 1000; // Reduced to 2 hours from 6 hours
-    this.trainedModels = new Map(); // Cache for trained TensorFlow models
-    this.PROGRESS_UPDATE_INTERVAL = 5; // Update progress every 5%
-    this.currentUserId = null; // Add currentUserId property
+    this.MODEL_CACHE_DURATION = 2 * 60 * 60 * 1000;
+    this.trainedModels = new Map();
+    this.PROGRESS_UPDATE_INTERVAL = 5;
+    this.currentUserId = null;
   }
 
   async prepareForecastData(userId, numMonths = 36) {
@@ -162,13 +163,6 @@ export default class AdvancedAIForecastService {
             const monthVariation = this._getMonthVariation(i, monthNumber);
 
             // Get category-based predictions for more accuracy
-            const categoryPredictions = await this._predictCategoriesWithVariation(
-              data.categoryData,
-              i,
-              data.dates,
-              monthPattern,
-              monthVariation,
-            );
 
             // Use TensorFlow for expense/income predictions with monthly variation
             let predictedExpense = await this._tfPredict(userId, 'expense', i + 1);
@@ -325,8 +319,11 @@ export default class AdvancedAIForecastService {
     return prediction;
   }
 
-  async _trainOrGetModel(userId, series, type, dates) {
-    const modelKey = `model_${userId}_${type}`;
+  // Внутри класса AdvancedAIForecastService
+
+  async _trainOrGetModel(userId, series, type, dates, windowSize = 3, epochs = 100) {
+    // Добавили windowSize
+    const modelKey = `model_${userId}_${type}_lstm_w${windowSize}`; // Изменили ключ для новой модели
     if (
       this.trainedModels.has(modelKey) &&
       Date.now() - this.trainedModels.get(modelKey).timestamp < this.MODEL_CACHE_DURATION
@@ -334,91 +331,127 @@ export default class AdvancedAIForecastService {
       return this.trainedModels.get(modelKey).model;
     }
 
-    // Prepare data for TensorFlow
-    // Convert dates to numerical values for training
-    const dateValues = dates.map((d, i) => i);
-
-    if (series.length < 6) {
-      // Not enough data for reliable model
+    if (series.length < windowSize + 5) {
+      // Нужно достаточно данных для создания окон + обучения
+      console.warn(
+        `Not enough data for ${type} LSTM model (requires ${windowSize + 5}, got ${series.length}). Falling back.`,
+      );
       return null;
     }
 
     try {
-      // Normalize data
       const { normalizedData, min, max } = this._normalizeData(series);
 
-      // Create tensor datasets
-      const xs = tf.tensor2d(
-        dateValues.map((d) => [d]),
-        [dateValues.length, 1],
-      );
-      const ys = tf.tensor2d(
-        normalizedData.map((v) => [v]),
-        [normalizedData.length, 1],
-      );
+      // Создание последовательностей (окон)
+      const sequences = [];
+      const labels = [];
+      for (let i = 0; i < normalizedData.length - windowSize; i++) {
+        sequences.push(normalizedData.slice(i, i + windowSize));
+        labels.push(normalizedData[i + windowSize]);
+      }
 
-      // Create and train the model
+      if (sequences.length === 0) {
+        console.warn(`Not enough sequences created for ${type} LSTM model. Falling back.`);
+        return null;
+      }
+
+      // Преобразование в тензоры: [количество_примеров, длина_окна, количество_признаков_в_окне (здесь 1)]
+      const xs = tf.tensor3d(sequences, [sequences.length, windowSize, 1]);
+      const ys = tf.tensor2d(labels, [labels.length, 1]);
+
       const model = tf.sequential();
-      model.add(tf.layers.dense({ units: 10, inputShape: [1], activation: 'relu' }));
-      model.add(tf.layers.dense({ units: 10, activation: 'relu' }));
+      model.add(tf.layers.lstm({ units: 50, inputShape: [windowSize, 1], returnSequences: true })); // LSTM слой
+      model.add(tf.layers.dropout({ rate: 0.2 })); // Dropout для регуляризации
+      model.add(tf.layers.lstm({ units: 50, returnSequences: false }));
+      model.add(tf.layers.dropout({ rate: 0.2 }));
       model.add(tf.layers.dense({ units: 1 }));
 
       model.compile({
-        optimizer: tf.train.adam(0.01),
+        optimizer: tf.train.adam(0.005), // Можно попробовать другую скорость обучения
         loss: 'meanSquaredError',
       });
 
       await model.fit(xs, ys, {
-        epochs: 100,
+        epochs: epochs, // Можно увеличить/уменьшить
         callbacks: {
           onEpochEnd: (epoch, logs) => {
             if (epoch % 20 === 0) {
-              console.log(`Training model for ${type}, epoch ${epoch}: loss = ${logs.loss}`);
+              console.log(`Training LSTM model for ${type}, epoch ${epoch}: loss = ${logs.loss}`);
             }
           },
         },
+        shuffle: true, // Перемешивать данные на каждой эпохе
       });
 
-      // Cache the trained model
       this.trainedModels.set(modelKey, {
         model,
         timestamp: Date.now(),
-        metadata: { min, max },
+        metadata: { min, max, windowSize, lastWindow: normalizedData.slice(-windowSize) }, // Сохраняем последнее окно
       });
 
       return model;
     } catch (error) {
-      console.error(`Error training model for ${type}:`, error);
+      console.error(`Error training LSTM model for ${type}:`, error);
       return null;
     }
   }
 
   async _tfPredict(userId, type, monthsAhead) {
-    const modelKey = `model_${userId}_${type}`;
-    if (!this.trainedModels.has(modelKey)) {
+    // monthsAhead здесь означает, на сколько месяцев вперед от ПОСЛЕДНЕГО известного
+    const modelKeyPrefix = `model_${userId}_${type}_lstm`; // Ищем LSTM модели
+    let bestModelKey = null;
+    let latestTimestamp = 0;
+
+    // Найдем самую свежую LSTM модель для данного типа
+    for (const key of this.trainedModels.keys()) {
+      if (key.startsWith(modelKeyPrefix)) {
+        const modelData = this.trainedModels.get(key);
+        if (modelData.timestamp > latestTimestamp) {
+          latestTimestamp = modelData.timestamp;
+          bestModelKey = key;
+        }
+      }
+    }
+
+    if (!bestModelKey || !this.trainedModels.has(bestModelKey)) {
+      // console.warn(`No LSTM model found for ${type}.`);
       return null;
     }
 
-    const { model, metadata } = this.trainedModels.get(modelKey);
-    const { min, max } = metadata;
+    const { model, metadata } = this.trainedModels.get(bestModelKey);
+    const { min, max, windowSize, lastWindow: initialLastWindow } = metadata;
+
+    if (!initialLastWindow || initialLastWindow.length !== windowSize) {
+      console.error(`Invalid lastWindow in metadata for ${type}`);
+      return null;
+    }
 
     try {
-      // Use the last data point index + monthsAhead as input
-      const lastIndex = this.trainedModels.get(modelKey).metadata.lastIndex || 0;
-      const input = tf.tensor2d([[lastIndex + monthsAhead]]);
+      let currentWindow = [...initialLastWindow]; // Копируем, чтобы не изменять в кеше
+      let predictedValue;
 
-      // Get prediction
-      const predictionNormalized = model.predict(input);
-      const predictionValue = predictionNormalized.dataSync()[0];
+      // Предсказываем пошагово на monthsAhead месяцев
+      for (let i = 0; i < monthsAhead; i++) {
+        const inputTensor = tf.tensor3d([currentWindow], [1, windowSize, 1]);
+        const predictionNormalizedTensor = model.predict(inputTensor);
+        const predictionNormalizedArray = await predictionNormalizedTensor.data(); // Используем await
+        predictedValue = predictionNormalizedArray[0];
 
-      // Denormalize to get actual value
-      return predictionValue * (max - min) + min;
+        tf.dispose(inputTensor); // Освобождаем память
+        tf.dispose(predictionNormalizedTensor);
+
+        // Обновляем окно для следующего предсказания
+        currentWindow.shift();
+        currentWindow.push(predictedValue);
+      }
+
+      // Денормализация последнего предсказанного значения
+      return predictedValue * (max - min) + min;
     } catch (error) {
-      console.error(`Error predicting with TF model for ${type}:`, error);
+      console.error(`Error predicting with TF LSTM model for ${type}:`, error);
       return null;
     }
   }
-
   _normalizeData(data) {
     const min = Math.min(...data);
     const max = Math.max(...data);
@@ -1369,24 +1402,20 @@ export default class AdvancedAIForecastService {
     return Array.from({ length: 12 }, (_, i) => this._generateVariedDefaultMonthForecast(i));
   }
 
-  // Calculate data quality metrics
   async _calculateDataQuality(userId) {
     try {
-      // Get transaction count
       const transactionCount = await TransactionCollection.countDocuments({ userId });
 
-      // Get date range of transactions
       const oldestTransaction = await TransactionCollection.findOne({ userId }, { sort: { date: 1 } });
       const newestTransaction = await TransactionCollection.findOne({ userId }, { sort: { date: -1 } });
 
       let monthsOfData = 0;
       if (oldestTransaction && newestTransaction) {
         const monthsDiff = differenceInMonths(newestTransaction.date, oldestTransaction.date);
-        // Ensure we always have a valid number (at least 1)
+
         monthsOfData = Math.max(1, monthsDiff + 1);
       }
 
-      // Calculate completeness (percentage of months with transactions)
       let completeness = 0;
       if (monthsOfData > 0) {
         const monthsWithTransactions = await TransactionCollection.aggregate([
@@ -1401,14 +1430,14 @@ export default class AdvancedAIForecastService {
 
       return {
         transactionCount: transactionCount || 0,
-        monthsOfData: monthsOfData || 1, // Ensure we always return a valid number
+        monthsOfData: monthsOfData || 1,
         completeness: completeness || 0,
       };
     } catch (error) {
       console.error('Error calculating data quality:', error);
       return {
         transactionCount: 0,
-        monthsOfData: 1, // Default to 1 instead of 0 to avoid NaN issues
+        monthsOfData: 1,
         completeness: 0,
       };
     }
