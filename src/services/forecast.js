@@ -6,17 +6,44 @@ import { format, addMonths, subMonths } from 'date-fns';
 // Create an instance of the forecast service
 const forecastService = new AdvancedMachineLearningForecastService();
 
+// Cache duration constants for different forecast types
+const GOAL_FORECAST_CACHE_DURATION = 60 * 60 * 1000; // 1 hour for goal forecasts
+const BUDGET_FORECAST_CACHE_DURATION = 12 * 60 * 60 * 1000; // 12 hours for budget forecasts
+const CATEGORY_FORECAST_CACHE_DURATION = 6 * 60 * 60 * 1000; // 6 hours for category forecasts
+const QUICK_ESTIMATE_CACHE_DURATION = 15 * 60 * 1000; // 15 minutes for quick estimates
+
 // Update forecasts whenever a transaction, goal, or balance changes
-export const updateForecasts = async (userId, session = null) => {
+export const updateForecasts = async (userId, session = null, forceUpdate = false) => {
   try {
+    console.log(`Starting forecast update process for user ${userId}, forceUpdate: ${forceUpdate}`);
+    const startTime = Date.now();
+
+    // First, check if we need to update
+    if (!forceUpdate) {
+      const existingForecast = await ForecastCollection.findOne({ userId });
+
+      // If we have a recent forecast and not forcing update, use the cached version
+      if (existingForecast && existingForecast.lastUpdated) {
+        const timeSinceLastUpdate = Date.now() - new Date(existingForecast.lastUpdated).getTime();
+        if (timeSinceLastUpdate < QUICK_ESTIMATE_CACHE_DURATION) {
+          console.log(`Using recent forecast from ${timeSinceLastUpdate}ms ago`);
+          return existingForecast;
+        }
+      }
+    } else {
+      console.log('Forcing forecast update after transaction');
+    }
+
     // First, generate quick estimates for immediate display
+    console.log('Generating quick estimates...');
     const quickEstimates = await generateQuickEstimates(userId);
 
     // Generate 30-day budget forecast
+    console.log('Generating 30-day budget...');
     const thirtyDayBudget = await generateThirtyDayBudget(userId);
 
     // Update the forecast document with quick estimates and set status to in_progress
-    await ForecastCollection.findOneAndUpdate(
+    const initialUpdate = await ForecastCollection.findOneAndUpdate(
       { userId },
       {
         quickEstimates,
@@ -29,11 +56,16 @@ export const updateForecasts = async (userId, session = null) => {
     );
 
     // Then proceed with full forecast calculation
+    console.log('Proceeding with full forecast calculation...');
+    let result;
     if (session) {
-      return await forecastService.updateForecasts(userId, session);
+      result = await forecastService.updateForecasts(userId, session);
     } else {
-      return await forecastService.updateForecasts(userId);
+      result = await forecastService.updateForecasts(userId);
     }
+
+    console.log(`Forecast update completed in ${Date.now() - startTime}ms`);
+    return result;
   } catch (error) {
     console.error('Error updating forecasts:', error);
     throw error;
@@ -259,12 +291,6 @@ const calculateSeasonalFactor = (monthNumber) => {
 
   return seasonalFactors[monthNumber] || 1.0;
 };
-
-// Cache duration constants for different forecast types
-const GOAL_FORECAST_CACHE_DURATION = 60 * 60 * 1000; // 1 hour for goal forecasts
-const BUDGET_FORECAST_CACHE_DURATION = 12 * 60 * 60 * 1000; // 12 hours for budget forecasts
-const CATEGORY_FORECAST_CACHE_DURATION = 6 * 60 * 60 * 1000; // 6 hours for category forecasts
-const QUICK_ESTIMATE_CACHE_DURATION = 15 * 60 * 1000; // 15 minutes for quick estimates
 
 export const getGoalForecasts = async (userId) => {
   try {

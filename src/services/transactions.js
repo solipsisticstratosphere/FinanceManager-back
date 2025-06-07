@@ -6,6 +6,8 @@ import { TransactionCollection } from '../db/models/Transaction.js';
 import { updateGoalProgress } from './goal.js';
 
 import AdvancedAIForecastService from './AIForecastService.js';
+import { updateForecasts as updateForecastsService } from './forecast.js';
+
 const forecastService = new AdvancedAIForecastService();
 
 const DEFAULT_EXPENSE_WINDOW_SIZE = 3;
@@ -101,13 +103,17 @@ const processSequentially = async (transactionData) => {
     try {
       console.log(`Invalidating caches for user ${userId} before forecast update...`);
 
+      // Invalidate LSTM model caches to force retraining with new transaction data
       const expenseModelKey = `model_${userId}_expense_lstm_w${DEFAULT_EXPENSE_WINDOW_SIZE}`;
       const incomeModelKey = `model_${userId}_income_lstm_w${DEFAULT_INCOME_WINDOW_SIZE}`;
 
       forecastService.trainedModels.delete(expenseModelKey);
       forecastService.trainedModels.delete(incomeModelKey);
+
+      // Clear forecast cache to ensure new forecasts will be generated
       forecastService.forecastCache.delete(`forecast_${userId}`);
 
+      // Clear goal calculation cache to recalculate based on new transaction
       forecastService.goalCalculationCache.delete(`goal_${userId}`);
 
       console.log(`Caches invalidated for user ${userId}.`);
@@ -117,9 +123,13 @@ const processSequentially = async (transactionData) => {
 
     console.log('Updating forecasts');
     try {
-      await forecastService.updateForecasts(userId);
-
-      console.log('Forecasts updated successfully');
+      // Use updateForecastsService with forceUpdate=true to ensure model retraining
+      const updatedForecasts = await updateForecastsService(userId, null, true);
+      console.log('Forecasts updated successfully', {
+        forecastMethod: updatedForecasts.forecastMethod,
+        confidenceScore: updatedForecasts.confidenceScore,
+        lastUpdated: updatedForecasts.lastUpdated,
+      });
     } catch (forecastError) {
       console.error('Error updating forecasts (non-critical):', forecastError.message);
     }

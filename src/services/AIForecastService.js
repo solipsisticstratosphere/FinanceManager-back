@@ -322,17 +322,21 @@ export default class AdvancedAIForecastService {
   // Внутри класса AdvancedAIForecastService
 
   async _trainOrGetModel(userId, series, type, dates, windowSize = 3, epochs = 100) {
-    // Добавили windowSize
-    const modelKey = `model_${userId}_${type}_lstm_w${windowSize}`; // Изменили ключ для новой модели
+    // Modified model key to include windowSize
+    const modelKey = `model_${userId}_${type}_lstm_w${windowSize}`;
+
+    // Only use cached model if it exists and is fresh
     if (
       this.trainedModels.has(modelKey) &&
       Date.now() - this.trainedModels.get(modelKey).timestamp < this.MODEL_CACHE_DURATION
     ) {
+      console.log(`Using cached ${type} LSTM model for user ${userId}`);
       return this.trainedModels.get(modelKey).model;
     }
 
+    // Check if we have enough data for training
     if (series.length < windowSize + 5) {
-      // Нужно достаточно данных для создания окон + обучения
+      // Need enough data for creating windows + training
       console.warn(
         `Not enough data for ${type} LSTM model (requires ${windowSize + 5}, got ${series.length}). Falling back.`,
       );
@@ -340,9 +344,11 @@ export default class AdvancedAIForecastService {
     }
 
     try {
+      console.log(`Training new ${type} LSTM model for user ${userId} with ${series.length} data points`);
+
       const { normalizedData, min, max } = this._normalizeData(series);
 
-      // Создание последовательностей (окон)
+      // Create sequences (windows)
       const sequences = [];
       const labels = [];
       for (let i = 0; i < normalizedData.length - windowSize; i++) {
@@ -355,38 +361,47 @@ export default class AdvancedAIForecastService {
         return null;
       }
 
-      // Преобразование в тензоры: [количество_примеров, длина_окна, количество_признаков_в_окне (здесь 1)]
+      // Convert to tensors: [num_examples, window_size, features_per_window (here 1)]
       const xs = tf.tensor3d(sequences, [sequences.length, windowSize, 1]);
       const ys = tf.tensor2d(labels, [labels.length, 1]);
 
       const model = tf.sequential();
-      model.add(tf.layers.lstm({ units: 50, inputShape: [windowSize, 1], returnSequences: true })); // LSTM слой
-      model.add(tf.layers.dropout({ rate: 0.2 })); // Dropout для регуляризации
+      model.add(tf.layers.lstm({ units: 50, inputShape: [windowSize, 1], returnSequences: true })); // LSTM layer
+      model.add(tf.layers.dropout({ rate: 0.2 })); // Dropout for regularization
       model.add(tf.layers.lstm({ units: 50, returnSequences: false }));
       model.add(tf.layers.dropout({ rate: 0.2 }));
       model.add(tf.layers.dense({ units: 1 }));
 
       model.compile({
-        optimizer: tf.train.adam(0.005), // Можно попробовать другую скорость обучения
+        optimizer: tf.train.adam(0.005),
         loss: 'meanSquaredError',
       });
 
+      // Train the model with more detailed logging
       await model.fit(xs, ys, {
-        epochs: epochs, // Можно увеличить/уменьшить
+        epochs: epochs,
+        batchSize: Math.min(32, sequences.length), // Dynamic batch size based on data amount
         callbacks: {
           onEpochEnd: (epoch, logs) => {
-            if (epoch % 20 === 0) {
-              console.log(`Training LSTM model for ${type}, epoch ${epoch}: loss = ${logs.loss}`);
+            if (epoch % 20 === 0 || epoch === epochs - 1) {
+              console.log(`Training LSTM model for ${type}, epoch ${epoch + 1}/${epochs}: loss = ${logs.loss}`);
             }
           },
+          onTrainEnd: () => {
+            console.log(`Finished training ${type} LSTM model for user ${userId}`);
+          },
         },
-        shuffle: true, // Перемешивать данные на каждой эпохе
+        shuffle: true, // Shuffle data on each epoch
       });
 
+      // Clean up tensors to prevent memory leaks
+      tf.dispose([xs, ys]);
+
+      // Save model to cache
       this.trainedModels.set(modelKey, {
         model,
         timestamp: Date.now(),
-        metadata: { min, max, windowSize, lastWindow: normalizedData.slice(-windowSize) }, // Сохраняем последнее окно
+        metadata: { min, max, windowSize, lastWindow: normalizedData.slice(-windowSize) },
       });
 
       return model;
@@ -686,15 +701,20 @@ export default class AdvancedAIForecastService {
     try {
       this.currentUserId = userId; // Set currentUserId when updating forecasts
       const startTime = Date.now();
+      console.log(`Starting forecast update for user ${userId} after transaction`);
 
       // Clear the goal calculation cache to ensure fresh forecasts after transactions
       this.goalCalculationCache.delete(`goal_${userId}`);
+      this.forecastCache.delete(`forecast_${userId}`);
 
+      console.log(`Generating new budget forecasts for user ${userId}`);
       const budgetForecasts = await this.predictFinancialForecast(userId);
 
       let goalForecast = null;
       try {
+        console.log(`Calculating enhanced goal forecast for user ${userId}`);
         goalForecast = await this._calculateEnhancedGoalForecast(userId);
+        console.log(`Goal forecast calculated successfully for user ${userId}`);
       } catch (goalError) {
         console.error('Error calculating goal forecast:', goalError);
         // Continue without goal forecast if there's an error
@@ -720,13 +740,16 @@ export default class AdvancedAIForecastService {
         budgetForecasts: validatedForecasts,
         goalForecast: validatedGoalForecast,
         lastUpdated: new Date(),
-        forecastMethod: 'Advanced-AI-Enhanced-v4', // Updated version
+        forecastMethod: 'Advanced-AI-Enhanced-v4.1', // Updated version number
         confidenceScore: isNaN(confidenceScore) ? 50 : confidenceScore,
         calculationStatus: 'completed',
         calculationProgress: 100,
         calculationTime: Date.now() - startTime,
         dataQuality: safeDataQuality,
       };
+
+      console.log(`Forecast update completed for user ${userId} in ${Date.now() - startTime}ms`);
+      console.log(`Forecast confidence: ${confidenceScore}, Data quality: ${JSON.stringify(safeDataQuality)}`);
 
       if (session) {
         return ForecastCollection.findOneAndUpdate({ userId }, updateOperation, { upsert: true, new: true, session });
@@ -741,7 +764,7 @@ export default class AdvancedAIForecastService {
         budgetForecasts: defaultForecasts,
         goalForecast: null,
         lastUpdated: new Date(),
-        forecastMethod: 'Advanced-AI-Enhanced-v4-Default',
+        forecastMethod: 'Advanced-AI-Enhanced-v4.1-Default',
         confidenceScore: 30,
         calculationStatus: 'failed',
         calculationProgress: 0,
