@@ -6,13 +6,13 @@ export const getBalanceController = async (req, res) => {
 };
 
 export const updateBalanceController = async (req, res) => {
-  const { balance } = req.body; // Изменено с newBalance на balance
+  const { balance } = req.body;
   const updatedUser = await balanceServices.updateBalance(req.user._id, balance);
   res.status(200).json({
     status: 200,
     message: 'Balance updated',
     data: {
-      balance: updatedUser.balance, // Возвращаем только баланс вместо всего пользователя
+      balance: updatedUser.balance,
     },
   });
 };

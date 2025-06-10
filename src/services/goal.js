@@ -17,7 +17,7 @@ export const createGoal = async (goalData) => {
     }
 
     const goal = await GoalCollection.create([goalData], { session });
-    await updateForecasts(goalData.userId, session); // Передаем сессию
+    await updateForecasts(goalData.userId, session);
 
     await session.commitTransaction();
     return goal[0];
@@ -92,7 +92,7 @@ export const setActiveGoal = async (userId, goalId) => {
     if (!goal) {
       throw new createHttpError(404, 'Goal not found');
     }
-    await updateForecasts(userId, session); // Передаем сессию
+    await updateForecasts(userId, session);
     await session.commitTransaction();
     return goal;
   } catch (error) {
@@ -115,7 +115,6 @@ export const deactivateGoal = async (userId, goalId) => {
 
     if (!goal) throw new createHttpError(404, 'Goal not found');
 
-    // Update forecasts after deactivating a goal
     await updateForecasts(userId, session);
 
     await session.commitTransaction();
@@ -137,7 +136,6 @@ export const deleteGoal = async (userId, goalId) => {
       throw new createHttpError(404, 'Goal not found');
     }
 
-    // Update forecasts after deleting a goal to ensure they're current
     await updateForecasts(userId, session);
 
     await session.commitTransaction();

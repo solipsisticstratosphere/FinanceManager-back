@@ -1,6 +1,5 @@
 import mongoose from 'mongoose';
 
-// Define the risk factor schema separately
 const riskFactorSchema = new mongoose.Schema(
   {
     type: {
@@ -16,10 +15,9 @@ const riskFactorSchema = new mongoose.Schema(
       default: 'Risk factor',
     },
   },
-  { _id: false }, // Don't create _id for subdocuments
+  { _id: false },
 );
 
-// Define the quick estimate schema for immediate display
 const quickEstimateSchema = new mongoose.Schema(
   {
     monthStr: String,
@@ -35,7 +33,6 @@ const quickEstimateSchema = new mongoose.Schema(
   { _id: false },
 );
 
-// Define the 30-day budget forecast schema
 const thirtyDayBudgetSchema = new mongoose.Schema(
   {
     projectedExpense: Number,
@@ -76,11 +73,11 @@ const forecastSchema = new mongoose.Schema(
         riskAssessment: Number,
       },
     ],
-    // Quick estimates for immediate display
+
     quickEstimates: [quickEstimateSchema],
-    // 30-day budget forecast
+
     thirtyDayBudget: thirtyDayBudgetSchema,
-    // Progressive loading status
+
     calculationStatus: {
       type: String,
       enum: ['pending', 'in_progress', 'completed', 'failed'],
@@ -105,7 +102,7 @@ const forecastSchema = new mongoose.Schema(
       savingsVariability: Number,
       probability: Number,
       riskFactors: [riskFactorSchema],
-      // Quick goal estimate for immediate display
+
       quickEstimate: {
         expectedMonthsToGoal: Number,
         monthlySavings: Number,
@@ -128,12 +125,12 @@ const forecastSchema = new mongoose.Schema(
       type: Number,
       default: 50,
     },
-    // Performance metrics
+
     calculationTime: {
       type: Number,
       default: 0,
     },
-    // Data quality indicators
+
     dataQuality: {
       transactionCount: Number,
       monthsOfData: Number,
@@ -143,7 +140,6 @@ const forecastSchema = new mongoose.Schema(
   { versionKey: false, timestamps: true },
 );
 
-// Add index for faster queries
 forecastSchema.index({ userId: 1, lastUpdated: -1 });
 
 export const ForecastCollection = mongoose.model('Forecast', forecastSchema);

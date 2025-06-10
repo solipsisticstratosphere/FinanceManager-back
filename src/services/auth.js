@@ -50,17 +50,14 @@ export const logout = async (sessionToken) => {
       throw createHttpError(401, 'No session token provided');
     }
 
-    // Find the session by access token instead of ID
     const session = await SessionCollection.findOne({
       accessToken: sessionToken,
     });
 
     if (!session) {
-      // If session not found, consider it already logged out
       return true;
     }
 
-    // Delete the session
     await SessionCollection.deleteOne({ _id: session._id });
     return true;
   } catch (error) {
@@ -84,7 +81,6 @@ export const refreshUserSession = async ({ sessionId, refreshToken }) => {
 
 export const loginOrSignupWithGoogle = async (code) => {
   try {
-    // Validate the code parameter
     if (!code || typeof code !== 'string') {
       throw createHttpError(400, 'Invalid authorization code');
     }
@@ -96,7 +92,6 @@ export const loginOrSignupWithGoogle = async (code) => {
       throw createHttpError(401, 'Invalid Google token payload');
     }
 
-    // Find or create user with better error handling
     let user = await UserCollection.findOne({ email: payload.email });
 
     if (!user) {
@@ -116,7 +111,6 @@ export const loginOrSignupWithGoogle = async (code) => {
       }
     }
 
-    // Update avatar if needed
     if (payload.picture && !user.avatar_url) {
       try {
         await UserCollection.findByIdAndUpdate(user._id, {
@@ -124,7 +118,6 @@ export const loginOrSignupWithGoogle = async (code) => {
         });
         user.avatar_url = payload.picture;
       } catch (error) {
-        // Non-critical error, just log it
         console.error('Failed to update avatar:', error);
       }
     }

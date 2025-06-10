@@ -47,7 +47,6 @@ export const connectMonobank = async (userId, token) => {
       currencyCode: account.currencyCode,
     }));
 
-    // Ищем существующую запись или создаем новую
     const tokenRecord = await MonobankToken.findOneAndUpdate(
       { userId },
       {
@@ -62,7 +61,6 @@ export const connectMonobank = async (userId, token) => {
       },
     );
 
-    // Сразу выполняем синхронизацию транзакций
     await syncMonobankTransactions(userId);
 
     return {
@@ -79,11 +77,10 @@ export const connectMonobank = async (userId, token) => {
         error.response.data?.errorDescription || 'Ошибка при подключении к Монобанку',
       );
     }
-    throw error; // Пробрасываем ошибки createHttpError как есть
+    throw error;
   }
 };
 
-// Функция для отключения Монобанка (удаление токена)
 export const disconnectMonobank = async (userId) => {
   const result = await MonobankToken.findOneAndDelete({ userId });
   if (!result) {
@@ -92,24 +89,19 @@ export const disconnectMonobank = async (userId) => {
   return { connected: false };
 };
 
-// Функция для синхронизации транзакций из Монобанка
 export const syncMonobankTransactions = async (userId) => {
   let session = null;
 
   try {
-    // Находим токен пользователя
     const tokenRecord = await MonobankToken.findOne({ userId });
     if (!tokenRecord) {
       throw new createHttpError(404, 'Подключение к Монобанку не найдено');
     }
 
-    // Расшифровываем токен
     const token = MonobankToken.decryptToken(tokenRecord.encryptedToken, tokenRecord.iv);
 
-    // Получаем актуальную информацию о клиенте, включая счета с текущими балансами
     const clientInfo = await getMonobankClientInfo(token);
 
-    // Обновляем информацию о счетах
     const updatedAccounts = clientInfo.accounts.map((account) => ({
       id: account.id,
       name: account.maskedPan.length ? account.maskedPan[0] : 'Счет',
@@ -117,7 +109,6 @@ export const syncMonobankTransactions = async (userId) => {
       currencyCode: account.currencyCode,
     }));
 
-    // Определяем период для синхронизации транзакций
     const currentTime = Math.floor(Date.now() / 1000);
     let fromTime;
 

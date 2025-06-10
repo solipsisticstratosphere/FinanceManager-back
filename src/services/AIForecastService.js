@@ -16,16 +16,13 @@ export default class AdvancedAIForecastService {
   }
 
   async prepareForecastData(userId, numMonths = 36) {
-    // Extended to 36 months for better pattern recognition
     const startDate = subMonths(new Date(), numMonths);
 
-    // First, get all transactions for the user
     const transactions = await TransactionCollection.find({
       userId,
       date: { $gte: startDate },
     }).sort({ date: 1 });
 
-    // Group transactions by month
     const monthlyData = {};
     transactions.forEach((transaction) => {
       const monthStr = format(transaction.date, 'yyyy-MM');
@@ -40,7 +37,6 @@ export default class AdvancedAIForecastService {
         };
       }
 
-      // Update monthly totals
       if (transaction.type === 'expense') {
         monthlyData[monthStr].expenses += transaction.amount;
       } else {
@@ -48,10 +44,8 @@ export default class AdvancedAIForecastService {
       }
       monthlyData[monthStr].transactionCount++;
 
-      // Add category to set
       monthlyData[monthStr].categories.add(transaction.category);
 
-      // Update category breakdown
       if (!monthlyData[monthStr].categoryBreakdown[transaction.category]) {
         monthlyData[monthStr].categoryBreakdown[transaction.category] = {
           amount: 0,
@@ -61,14 +55,12 @@ export default class AdvancedAIForecastService {
       monthlyData[monthStr].categoryBreakdown[transaction.category].amount += transaction.amount;
     });
 
-    // Convert to arrays for easier processing
     const dates = Object.keys(monthlyData).sort();
     const expenses = dates.map((date) => monthlyData[date].expenses);
     const incomes = dates.map((date) => monthlyData[date].incomes);
     const transactionCounts = dates.map((date) => monthlyData[date].transactionCount);
     const categories = [...new Set(dates.flatMap((date) => [...monthlyData[date].categories]))];
 
-    // Process category data for more detailed analysis
     const categoryData = {};
     categories.forEach((category) => {
       categoryData[category] = {
@@ -107,7 +99,6 @@ export default class AdvancedAIForecastService {
 
     console.log(`Generating new financial forecast for user ${userId}`);
     try {
-      // Update progress to 20%
       await this._updateProgress(userId, 20);
 
       const data = await this.prepareForecastData(userId);
@@ -115,45 +106,34 @@ export default class AdvancedAIForecastService {
         `Prepared forecast data: ${data.expenses.length} expense records, ${data.incomes.length} income records`,
       );
 
-      // Check if we have enough data
       if (!data.expenses.length || !data.incomes.length) {
-        // Return varied default values if no data
         console.log(`Insufficient transaction data for user ${userId}, using default forecast`);
         return this._generateVariedDefaultForecast();
       }
 
-      // Update progress to 30%
       await this._updateProgress(userId, 30);
 
-      // Detect and remove outliers for more accurate predictions
       const cleanedExpenses = this._removeOutliers(data.expenses);
       const cleanedIncomes = this._removeOutliers(data.incomes);
 
-      // Update progress to 40%
       await this._updateProgress(userId, 40);
 
-      // Train TensorFlow models if needed
       const expenseModel = await this._trainOrGetModel(userId, cleanedExpenses, 'expense', data.dates);
       console.log(`Expense model ${expenseModel ? 'successfully trained/loaded' : 'could not be trained'}`);
 
-      // Update progress to 50%
       await this._updateProgress(userId, 50);
 
       const incomeModel = await this._trainOrGetModel(userId, cleanedIncomes, 'income', data.dates);
       console.log(`Income model ${incomeModel ? 'successfully trained/loaded' : 'could not be trained'}`);
 
-      // Update progress to 60%
       await this._updateProgress(userId, 60);
 
-      // Get average values for calculations
       const avgExpense = cleanedExpenses.reduce((sum, val) => sum + val, 0) / cleanedExpenses.length;
       const avgIncome = cleanedIncomes.reduce((sum, val) => sum + val, 0) / cleanedIncomes.length;
       console.log(`Average expense: ${avgExpense}, Average income: ${avgIncome}`);
 
-      // Get seasonal patterns if available
       const monthlyPatterns = this._extractMonthlyPatterns(data.dates, cleanedExpenses, cleanedIncomes);
 
-      // Update progress to 70%
       await this._updateProgress(userId, 70);
 
       const forecastMonths = 12;
@@ -164,14 +144,10 @@ export default class AdvancedAIForecastService {
             const monthStr = format(date, 'yyyy-MM');
             const monthNumber = parseInt(format(date, 'MM'));
 
-            // Apply monthly patterns if available
             const monthPattern = monthlyPatterns[monthNumber] || { expenseFactor: 1, incomeFactor: 1 };
 
-            // Add month-specific variations
-            // Different variation for each month ensures forecasts are not identical
             const monthVariation = this._getMonthVariation(i, monthNumber);
 
-            // Get category-based predictions for more accuracy
             const categoryPredictions = await this._predictCategoriesWithVariation(
               data.categoryData,
               i,
@@ -180,11 +156,9 @@ export default class AdvancedAIForecastService {
               monthVariation,
             );
 
-            // Use TensorFlow for expense/income predictions with monthly variation
             let predictedExpense = await this._tfPredict(userId, 'expense', i + 1);
             let predictedIncome = await this._tfPredict(userId, 'income', i + 1);
 
-            // Apply month-specific variation
             if (predictedExpense && !isNaN(predictedExpense)) {
               predictedExpense = predictedExpense * monthPattern.expenseFactor * (1 + monthVariation.expenseVariation);
               console.log(`Month ${i + 1} (${monthStr}): TF prediction for expense: ${predictedExpense}`);
@@ -195,7 +169,6 @@ export default class AdvancedAIForecastService {
               console.log(`Month ${i + 1} (${monthStr}): TF prediction for income: ${predictedIncome}`);
             }
 
-            // Fallback to statistical prediction if TF model is not reliable
             if (!predictedExpense || predictedExpense <= 0 || isNaN(predictedExpense)) {
               predictedExpense =
                 this._arimaBasedPrediction(cleanedExpenses, i) *
@@ -212,7 +185,6 @@ export default class AdvancedAIForecastService {
               console.log(`Month ${i + 1}: Using ARIMA fallback for income: ${predictedIncome}`);
             }
 
-            // Calculate confidence based on data quality and prediction method
             const expenseConfidence = this._calculateConfidence(
               predictedExpense,
               avgExpense,
@@ -228,7 +200,6 @@ export default class AdvancedAIForecastService {
               'income',
             );
 
-            // Adjust predictions based on confidence
             const adjustedExpense = this._adjustPredictionBasedOnConfidence(
               predictedExpense,
               avgExpense,
@@ -240,7 +211,6 @@ export default class AdvancedAIForecastService {
               incomeConfidence,
             );
 
-            // Ensure values are safe
             const safeExpense = isNaN(adjustedExpense)
               ? avgExpense * (1 + monthVariation.expenseVariation)
               : adjustedExpense;
@@ -251,11 +221,9 @@ export default class AdvancedAIForecastService {
 
             const projectedBalance = Math.max(0, safeIncome - safeExpense);
 
-            // Vary confidence by month
             const baseConfidence = (expenseConfidence + incomeConfidence) / 2;
-            const balanceConfidence = Math.max(60, Math.min(95, baseConfidence - i * 2)); // Confidence decreases with time
+            const balanceConfidence = Math.max(60, Math.min(95, baseConfidence - i * 2));
 
-            // Clean category predictions (remove NaN values)
             const cleanedCategoryPredictions = {};
             for (const [category, prediction] of Object.entries(categoryPredictions)) {
               cleanedCategoryPredictions[category] = {
@@ -264,7 +232,6 @@ export default class AdvancedAIForecastService {
               };
             }
 
-            // Calculate risk with safe values
             const riskAssessment = this._calculateEnhancedRiskScore(
               safeExpense,
               safeIncome,
@@ -288,13 +255,12 @@ export default class AdvancedAIForecastService {
             };
           } catch (error) {
             console.error(`Error predicting month ${i + 1}:`, error);
-            // Return safe default values for this month with variation
+
             return this._generateVariedDefaultMonthForecast(i);
           }
         }),
       );
 
-      // Update progress to 90%
       await this._updateProgress(userId, 90);
 
       console.log(
@@ -305,18 +271,16 @@ export default class AdvancedAIForecastService {
         timestamp: Date.now(),
       });
 
-      // Update progress to 100%
       await this._updateProgress(userId, 100);
 
       return experimentalForecast;
     } catch (error) {
       console.error('Error in predictFinancialForecast:', error);
-      // Return varied default values in case of error
+
       return this._generateVariedDefaultForecast();
     }
   }
 
-  // Helper method to update progress
   async _updateProgress(userId, progress) {
     try {
       await ForecastCollection.findOneAndUpdate(
@@ -332,9 +296,7 @@ export default class AdvancedAIForecastService {
     }
   }
 
-  // Helper method to adjust prediction based on confidence
   _adjustPredictionBasedOnConfidence(prediction, average, confidence) {
-    // If confidence is low, blend prediction with average
     if (confidence < 70) {
       const blendFactor = confidence / 100;
       return prediction * blendFactor + average * (1 - blendFactor);
@@ -342,13 +304,9 @@ export default class AdvancedAIForecastService {
     return prediction;
   }
 
-  // Внутри класса AdvancedAIForecastService
-
   async _trainOrGetModel(userId, series, type, dates, windowSize = 3, epochs = 100) {
-    // Modified model key to include windowSize
     const modelKey = `model_${userId}_${type}_lstm_w${windowSize}`;
 
-    // Only use cached model if it exists and is fresh
     if (
       this.trainedModels.has(modelKey) &&
       Date.now() - this.trainedModels.get(modelKey).timestamp < this.MODEL_CACHE_DURATION
@@ -357,9 +315,7 @@ export default class AdvancedAIForecastService {
       return this.trainedModels.get(modelKey).model;
     }
 
-    // Check if we have enough data for training
     if (series.length < windowSize + 5) {
-      // Need enough data for creating windows + training
       console.warn(
         `Not enough data for ${type} LSTM model (requires ${windowSize + 5}, got ${series.length}). Falling back.`,
       );
@@ -371,7 +327,6 @@ export default class AdvancedAIForecastService {
 
       const { normalizedData, min, max } = this._normalizeData(series);
 
-      // Create sequences (windows)
       const sequences = [];
       const labels = [];
       for (let i = 0; i < normalizedData.length - windowSize; i++) {
@@ -384,13 +339,12 @@ export default class AdvancedAIForecastService {
         return null;
       }
 
-      // Convert to tensors: [num_examples, window_size, features_per_window (here 1)]
       const xs = tf.tensor3d(sequences, [sequences.length, windowSize, 1]);
       const ys = tf.tensor2d(labels, [labels.length, 1]);
 
       const model = tf.sequential();
-      model.add(tf.layers.lstm({ units: 50, inputShape: [windowSize, 1], returnSequences: true })); // LSTM layer
-      model.add(tf.layers.dropout({ rate: 0.2 })); // Dropout for regularization
+      model.add(tf.layers.lstm({ units: 50, inputShape: [windowSize, 1], returnSequences: true }));
+      model.add(tf.layers.dropout({ rate: 0.2 }));
       model.add(tf.layers.lstm({ units: 50, returnSequences: false }));
       model.add(tf.layers.dropout({ rate: 0.2 }));
       model.add(tf.layers.dense({ units: 1 }));
@@ -400,10 +354,9 @@ export default class AdvancedAIForecastService {
         loss: 'meanSquaredError',
       });
 
-      // Train the model with more detailed logging
       await model.fit(xs, ys, {
         epochs: epochs,
-        batchSize: Math.min(32, sequences.length), // Dynamic batch size based on data amount
+        batchSize: Math.min(32, sequences.length),
         callbacks: {
           onEpochEnd: (epoch, logs) => {
             if (epoch % 20 === 0 || epoch === epochs - 1) {
@@ -414,13 +367,11 @@ export default class AdvancedAIForecastService {
             console.log(`Finished training ${type} LSTM model for user ${userId}`);
           },
         },
-        shuffle: true, // Shuffle data on each epoch
+        shuffle: true,
       });
 
-      // Clean up tensors to prevent memory leaks
       tf.dispose([xs, ys]);
 
-      // Save model to cache
       this.trainedModels.set(modelKey, {
         model,
         timestamp: Date.now(),
@@ -435,12 +386,10 @@ export default class AdvancedAIForecastService {
   }
 
   async _tfPredict(userId, type, monthsAhead) {
-    // monthsAhead здесь означает, на сколько месяцев вперед от ПОСЛЕДНЕГО известного
-    const modelKeyPrefix = `model_${userId}_${type}_lstm`; // Ищем LSTM модели
+    const modelKeyPrefix = `model_${userId}_${type}_lstm`;
     let bestModelKey = null;
     let latestTimestamp = 0;
 
-    // Найдем самую свежую LSTM модель для данного типа
     for (const key of this.trainedModels.keys()) {
       if (key.startsWith(modelKeyPrefix)) {
         const modelData = this.trainedModels.get(key);
@@ -452,7 +401,6 @@ export default class AdvancedAIForecastService {
     }
 
     if (!bestModelKey || !this.trainedModels.has(bestModelKey)) {
-      // console.warn(`No LSTM model found for ${type}.`);
       return null;
     }
 
@@ -465,25 +413,22 @@ export default class AdvancedAIForecastService {
     }
 
     try {
-      let currentWindow = [...initialLastWindow]; // Копируем, чтобы не изменять в кеше
+      let currentWindow = [...initialLastWindow];
       let predictedValue;
 
-      // Предсказываем пошагово на monthsAhead месяцев
       for (let i = 0; i < monthsAhead; i++) {
         const inputTensor = tf.tensor3d([currentWindow], [1, windowSize, 1]);
         const predictionNormalizedTensor = model.predict(inputTensor);
-        const predictionNormalizedArray = await predictionNormalizedTensor.data(); // Используем await
+        const predictionNormalizedArray = await predictionNormalizedTensor.data();
         predictedValue = predictionNormalizedArray[0];
 
-        tf.dispose(inputTensor); // Освобождаем память
+        tf.dispose(inputTensor);
         tf.dispose(predictionNormalizedTensor);
 
-        // Обновляем окно для следующего предсказания
         currentWindow.shift();
         currentWindow.push(predictedValue);
       }
 
-      // Денормализация последнего предсказанного значения
       return predictedValue * (max - min) + min;
     } catch (error) {
       console.error(`Error predicting with TF LSTM model for ${type}:`, error);
@@ -493,7 +438,7 @@ export default class AdvancedAIForecastService {
   _normalizeData(data) {
     const min = Math.min(...data);
     const max = Math.max(...data);
-    const range = max - min || 1; // Prevent division by zero
+    const range = max - min || 1;
 
     return {
       normalizedData: data.map((x) => (x - min) / range),
@@ -503,17 +448,15 @@ export default class AdvancedAIForecastService {
   }
 
   _removeOutliers(series) {
-    if (series.length < 4) return series; // Need enough data for reliable outlier detection
+    if (series.length < 4) return series;
 
     const mean = series.reduce((a, b) => a + b, 0) / series.length;
     const stdDev = Math.sqrt(series.reduce((sq, n) => sq + Math.pow(n - mean, 2), 0) / series.length);
 
-    // Use 2.5 standard deviations as threshold for outliers (more forgiving than 2)
     const threshold = 2.5 * stdDev;
 
     return series.map((value) => {
       if (Math.abs(value - mean) > threshold) {
-        // Replace outlier with interpolated value
         return mean + Math.sign(value - mean) * threshold;
       }
       return value;
@@ -524,12 +467,10 @@ export default class AdvancedAIForecastService {
     const predictions = {};
 
     for (const [category, data] of Object.entries(categoryData)) {
-      // Apply time series forecasting to individual categories
       const prediction = this._arimaBasedPrediction(data.amounts, monthOffset);
       const seasonalFactor = this._calculateAdvancedSeasonalityFactor(data.amounts, monthOffset, dates);
       const trendFactor = this._calculateAdvancedTrendFactor(data.amounts);
 
-      // Adjust prediction with seasonality and trend
       const adjustedPrediction = prediction * (1 + seasonalFactor + trendFactor);
 
       predictions[category] = {
@@ -548,14 +489,13 @@ export default class AdvancedAIForecastService {
     if (validSeries.length === 0) return 1;
 
     try {
-      // AR component: Weighted average of past values
       const arOrder = Math.min(6, Math.floor(validSeries.length / 3));
       let arComponent = 0;
       let weightSum = 0;
 
       for (let i = 1; i <= arOrder; i++) {
         const index = validSeries.length - i;
-        const weight = (arOrder - i + 1) / arOrder; // Higher weights for more recent values
+        const weight = (arOrder - i + 1) / arOrder;
 
         if (index >= 0) {
           arComponent += validSeries[index] * weight;
@@ -565,7 +505,6 @@ export default class AdvancedAIForecastService {
 
       arComponent = weightSum > 0 ? arComponent / weightSum : validSeries[validSeries.length - 1];
 
-      // MA component: Moving average of errors
       const errors = [];
       const maOrder = Math.min(3, Math.floor(validSeries.length / 4));
 
@@ -576,7 +515,6 @@ export default class AdvancedAIForecastService {
 
       const maComponent = errors.length > 0 ? errors.reduce((a, b) => a + b, 0) / errors.length : 0;
 
-      // I component: Check if differencing is needed (trend detection)
       let differenced = [];
       for (let i = 1; i < validSeries.length; i++) {
         differenced.push(validSeries[i] - validSeries[i - 1]);
@@ -584,20 +522,17 @@ export default class AdvancedAIForecastService {
 
       const meanDiff = differenced.length > 0 ? differenced.reduce((a, b) => a + b, 0) / differenced.length : 0;
 
-      // Final prediction combining AR, I and MA components
       const prediction = arComponent + maComponent + meanDiff * monthOffset;
 
-      // Adjust for confidence based on data size
       const confidenceFactor = Math.min(1, validSeries.length / 12);
       const mean = validSeries.reduce((a, b) => a + b, 0) / validSeries.length;
 
       const result = prediction * confidenceFactor + mean * (1 - confidenceFactor);
 
-      // Final safety check
       return isNaN(result) ? mean : result;
     } catch (error) {
       console.error('Error in _arimaBasedPrediction:', error);
-      // Fallback to simple average
+
       return validSeries.reduce((a, b) => a + b, 0) / validSeries.length;
     }
   }
@@ -605,9 +540,8 @@ export default class AdvancedAIForecastService {
   _adjustWithConfidence(prediction, seasonalityFactor, trendFactor, type = 'expense') {
     const adjustedValue = prediction * (1 + seasonalityFactor + trendFactor);
 
-    // Calculate confidence level based on factors
     const factorMagnitude = Math.abs(seasonalityFactor) + Math.abs(trendFactor);
-    // Higher factor magnitude = lower confidence
+
     const confidenceScore = Math.max(0, Math.min(100, 100 - factorMagnitude * 50));
 
     if (type === 'expense') {
@@ -627,15 +561,13 @@ export default class AdvancedAIForecastService {
     if (!series || series.length < 12) return 0;
 
     try {
-      // Get target month's historical pattern
       const targetMonth = format(addMonths(new Date(), monthOffset + 1), 'MM');
       const monthlyPatterns = {};
 
-      // Group historical data by month
       dates.forEach((dateStr, i) => {
         if (!isValid(parseISO(dateStr))) return;
 
-        const month = dateStr.split('-')[1]; // Extract month from YYYY-MM
+        const month = dateStr.split('-')[1];
         if (!monthlyPatterns[month]) {
           monthlyPatterns[month] = [];
         }
@@ -645,22 +577,19 @@ export default class AdvancedAIForecastService {
         }
       });
 
-      // If we have data for target month, use it for seasonality
       if (monthlyPatterns[targetMonth] && monthlyPatterns[targetMonth].length > 0) {
         const monthAverage =
           monthlyPatterns[targetMonth].reduce((a, b) => a + b, 0) / monthlyPatterns[targetMonth].length;
 
         const overallAverage = series.reduce((a, b) => a + b, 0) / series.length;
 
-        // Calculate seasonal ratio
         if (overallAverage > 0) {
-          const result = monthAverage / overallAverage - 1; // How much above/below average
+          const result = monthAverage / overallAverage - 1;
           return isNaN(result) ? 0 : result;
         }
       }
 
-      // Fallback to sinusoidal approximation if no data for target month
-      const seasonalPattern = series.slice(-12); // Last 12 months
+      const seasonalPattern = series.slice(-12);
       const avgSeasonal = seasonalPattern.reduce((a, b) => a + b, 0) / seasonalPattern.length;
       const result = Math.sin((monthOffset * Math.PI) / 6) * (avgSeasonal / (series[series.length - 1] || 1));
 
@@ -675,17 +604,14 @@ export default class AdvancedAIForecastService {
     if (!series || series.length < 3) return 0;
 
     try {
-      // Use exponential weighted moving average for trend detection
-      // This gives more importance to recent data points
       let weights = 0;
       let sum = 0;
 
-      // Calculate exponential weighted slope
       for (let i = 1; i < series.length; i++) {
-        const weight = Math.exp(0.1 * (i - 1)); // Exponential weight
+        const weight = Math.exp(0.1 * (i - 1));
         if (isNaN(series[i]) || isNaN(series[i - 1]) || series[i - 1] === 0) continue;
 
-        const slope = (series[i] - series[i - 1]) / (series[i - 1] || 1); // Percent change
+        const slope = (series[i] - series[i - 1]) / (series[i - 1] || 1);
         if (isNaN(slope)) continue;
 
         sum += slope * weight;
@@ -694,7 +620,6 @@ export default class AdvancedAIForecastService {
 
       const trend = weights > 0 ? sum / weights : 0;
 
-      // Limit extreme values to avoid overreaction
       const result = Math.max(-0.3, Math.min(0.3, trend));
       return isNaN(result) ? 0 : result;
     } catch (error) {
@@ -706,27 +631,21 @@ export default class AdvancedAIForecastService {
   _calculateEnhancedRiskScore(expense, income, expenseConfidence, incomeConfidence) {
     const balanceRatio = income / (expense || 1);
 
-    // Base risk assessment
     const baseRisk = Math.min(Math.max((1 - balanceRatio) * 100, 0), 100);
 
-    // Adjust risk based on confidence scores
-    // Lower confidence = higher risk
     const confidenceAdjustment = (100 - (expenseConfidence + incomeConfidence) / 2) * 0.3;
 
-    // Calculate volatility risk
     const volatilityRisk = (100 - expenseConfidence) * 0.4;
 
-    // Combine factors with different weights
     return Math.min(100, baseRisk * 0.6 + confidenceAdjustment + volatilityRisk * 0.3);
   }
 
   async updateForecasts(userId, session = null) {
     try {
-      this.currentUserId = userId; // Set currentUserId when updating forecasts
+      this.currentUserId = userId;
       const startTime = Date.now();
       console.log(`Starting forecast update for user ${userId} after transaction`);
 
-      // Clear the goal calculation cache to ensure fresh forecasts after transactions
       this.goalCalculationCache.delete(`goal_${userId}`);
       this.forecastCache.delete(`forecast_${userId}`);
 
@@ -740,19 +659,15 @@ export default class AdvancedAIForecastService {
         console.log(`Goal forecast calculated successfully for user ${userId}`);
       } catch (goalError) {
         console.error('Error calculating goal forecast:', goalError);
-        // Continue without goal forecast if there's an error
       }
 
-      // Validate data before saving to database
       const validatedForecasts = this._validateForecastData(budgetForecasts);
       const validatedGoalForecast = goalForecast ? this._validateGoalForecastData(goalForecast) : null;
 
       const confidenceScore = this._calculateOverallConfidence(validatedForecasts);
 
-      // Calculate data quality metrics
       const dataQuality = await this._calculateDataQuality(userId);
 
-      // Ensure all data quality values are valid numbers
       const safeDataQuality = {
         transactionCount: Number(dataQuality.transactionCount) || 0,
         monthsOfData: Number(dataQuality.monthsOfData) || 1,
@@ -763,7 +678,7 @@ export default class AdvancedAIForecastService {
         budgetForecasts: validatedForecasts,
         goalForecast: validatedGoalForecast,
         lastUpdated: new Date(),
-        forecastMethod: 'Advanced-AI-Enhanced-v4.1', // Updated version number
+        forecastMethod: 'Advanced-AI-Enhanced-v4.1',
         confidenceScore: isNaN(confidenceScore) ? 50 : confidenceScore,
         calculationStatus: 'completed',
         calculationProgress: 100,
@@ -781,7 +696,7 @@ export default class AdvancedAIForecastService {
       return ForecastCollection.findOneAndUpdate({ userId }, updateOperation, { upsert: true, new: true });
     } catch (error) {
       console.error('Error in updateForecasts:', error);
-      // Return default forecast in case of error
+
       const defaultForecasts = this._generateVariedDefaultForecast();
       const updateOperation = {
         budgetForecasts: defaultForecasts,
@@ -812,13 +727,11 @@ export default class AdvancedAIForecastService {
     }
 
     return forecasts.map((forecast) => {
-      // Ensure all numeric values are valid numbers
       const safeExpense = isNaN(forecast.projectedExpense) ? 1000 : forecast.projectedExpense;
       const safeIncome = isNaN(forecast.projectedIncome) ? 1500 : forecast.projectedIncome;
       const safeBalance = isNaN(forecast.projectedBalance) ? 500 : forecast.projectedBalance;
       const safeRisk = isNaN(forecast.riskAssessment) ? 50 : forecast.riskAssessment;
 
-      // Ensure confidence values are valid
       const confidence = forecast.confidence || { expense: 50, income: 50, balance: 50 };
       const safeConfidence = {
         expense: isNaN(confidence.expense) ? 50 : confidence.expense,
@@ -826,7 +739,6 @@ export default class AdvancedAIForecastService {
         balance: isNaN(confidence.balance) ? 50 : confidence.balance,
       };
 
-      // Ensure category predictions are valid
       const safeCategories = {};
       if (forecast.categoryPredictions) {
         Object.entries(forecast.categoryPredictions).forEach(([category, data]) => {
@@ -856,7 +768,6 @@ export default class AdvancedAIForecastService {
     if (!goalForecast) return null;
 
     try {
-      // Validate numeric values
       const safeExpectedMonths = isNaN(goalForecast.expectedMonthsToGoal) ? 12 : goalForecast.expectedMonthsToGoal;
       const safeBestCaseMonths = isNaN(goalForecast.bestCaseMonthsToGoal) ? 6 : goalForecast.bestCaseMonthsToGoal;
       const safeWorstCaseMonths = isNaN(goalForecast.worstCaseMonthsToGoal) ? 24 : goalForecast.worstCaseMonthsToGoal;
@@ -864,7 +775,6 @@ export default class AdvancedAIForecastService {
       const safeVariability = isNaN(goalForecast.savingsVariability) ? 50 : goalForecast.savingsVariability;
       const safeProbability = isNaN(goalForecast.probability) ? 50 : goalForecast.probability;
 
-      // Ensure risk factors are valid
       let safeRiskFactors = [];
 
       if (goalForecast.riskFactors && Array.isArray(goalForecast.riskFactors)) {
@@ -885,16 +795,16 @@ export default class AdvancedAIForecastService {
         goalId: goalForecast.goalId,
         expectedMonthsToGoal: Math.round(safeExpectedMonths),
         bestCaseMonthsToGoal: Math.round(safeBestCaseMonths),
-        worstCaseMonthsToGoal: Math.round(Math.min(120, safeWorstCaseMonths)), // Cap at 10 years for UI
+        worstCaseMonthsToGoal: Math.round(Math.min(120, safeWorstCaseMonths)),
         projectedDate: goalForecast.projectedDate || addMonths(new Date(), safeExpectedMonths),
-        monthlySavings: Math.round(safeMonthlySavings * 100) / 100, // Round to 2 decimal places
+        monthlySavings: Math.round(safeMonthlySavings * 100) / 100,
         savingsVariability: Math.round(safeVariability * 100) / 100,
         probability: Math.round(safeProbability),
         riskFactors: safeRiskFactors,
       };
     } catch (error) {
       console.error('Error in _validateGoalForecastData:', error);
-      // Return safe defaults
+
       return {
         goalId: goalForecast.goalId,
         expectedMonthsToGoal: 12,
@@ -913,7 +823,7 @@ export default class AdvancedAIForecastService {
     if (!forecasts || forecasts.length === 0) return 50;
 
     const confidenceScores = forecasts
-      .slice(0, 3) // Focus on short-term forecasts which are more reliable
+      .slice(0, 3)
       .map((f) => (f.confidence.expense + f.confidence.income + f.confidence.balance) / 3);
 
     return confidenceScores.reduce((a, b) => a + b, 0) / confidenceScores.length;
@@ -935,14 +845,12 @@ export default class AdvancedAIForecastService {
 
       if (!activeGoal) return null;
 
-      // Get more historical data for better analysis - 6 months instead of 3
       const transactions = await TransactionCollection.find({
         userId,
         date: { $gte: addMonths(new Date(), -6) },
       });
 
       if (!transactions || transactions.length === 0) {
-        // Not enough data to make a meaningful forecast
         return {
           goalId: activeGoal._id,
           expectedMonthsToGoal: 12,
@@ -956,7 +864,6 @@ export default class AdvancedAIForecastService {
         };
       }
 
-      // Calculate monthly savings with trend detection
       const monthlySavingsData = [];
       for (let i = 0; i < 6; i++) {
         const monthStart = addMonths(new Date(), -i - 1);
@@ -972,95 +879,74 @@ export default class AdvancedAIForecastService {
         monthlySavingsData.push(monthlySaving);
       }
 
-      // Calculate weighted average with more emphasis on recent months
       let weightedSavings = 0;
       let weightSum = 0;
 
       for (let i = 0; i < monthlySavingsData.length; i++) {
-        const weight = Math.exp(-0.4 * i); // Exponential decay weight
+        const weight = Math.exp(-0.4 * i);
         weightedSavings += monthlySavingsData[i] * weight;
         weightSum += weight;
       }
 
       const avgMonthlySavings = weightSum > 0 ? weightedSavings / weightSum : 0;
 
-      // Calculate savings variability for risk assessment
       const savingsVariability = this._calculateVariability(monthlySavingsData);
 
       const remaining = activeGoal.targetAmount - activeGoal.currentAmount;
 
-      // Ensure we have positive values for calculations
       const safeMonthlySavings = Math.max(1, avgMonthlySavings);
 
-      // Project with variance consideration
       const optimisticSavings = Math.max(safeMonthlySavings, safeMonthlySavings + savingsVariability * 0.5);
 
-      // Use multiple approaches to calculate pessimistic scenarios for more realistic estimates
-
-      // 1. Standard approach - subtract variability but with limits
       const standardPessimistic = Math.max(safeMonthlySavings * 0.2, safeMonthlySavings - savingsVariability);
 
-      // 2. Percentile-based approach - use the worst 25% of historical data
       const sortedSavings = [...monthlySavingsData].sort((a, b) => a - b);
       const worstQuartileSavings = sortedSavings[Math.floor(sortedSavings.length * 0.25)] || safeMonthlySavings * 0.5;
       const percentilePessimistic = Math.max(1, worstQuartileSavings);
 
-      // 3. Trend-based approach - if savings are declining, project based on rate of decline
-      let trendPessimistic = safeMonthlySavings * 0.5; // Default
+      let trendPessimistic = safeMonthlySavings * 0.5;
       if (monthlySavingsData.length >= 3) {
         const recentAvg = monthlySavingsData.slice(0, 3).reduce((a, b) => a + b, 0) / 3;
         const olderAvg =
           monthlySavingsData.slice(3).reduce((a, b) => a + b, 0) / Math.max(1, monthlySavingsData.slice(3).length);
 
         if (recentAvg < olderAvg && olderAvg > 0) {
-          // Calculate trend decline rate
           const declineRate = (olderAvg - recentAvg) / olderAvg;
-          // Project forward with continued decline (but put a floor on it)
+
           trendPessimistic = Math.max(safeMonthlySavings * 0.3, safeMonthlySavings * (1 - declineRate));
         }
       }
 
-      // Choose the most appropriate pessimistic value based on data quality
       let pessimisticSavings;
       const negativeMonths = monthlySavingsData.filter((s) => s <= 0).length;
 
       if (negativeMonths >= 2) {
-        // High risk scenario - multiple negative savings months
         pessimisticSavings = Math.max(1, safeMonthlySavings * 0.15);
       } else if (savingsVariability > safeMonthlySavings) {
-        // High variability scenario
         pessimisticSavings = Math.max(1, Math.min(percentilePessimistic, trendPessimistic));
       } else {
-        // Normal scenario - use standard approach
         pessimisticSavings = Math.max(1, standardPessimistic);
       }
 
       const bestCaseMonths = Math.max(1, Math.ceil(remaining / optimisticSavings));
 
-      // Calculate worst case months with a more accurate but bounded approach
       let worstCaseMonths;
 
       if (remaining <= 0) {
-        worstCaseMonths = 1; // Already achieved
+        worstCaseMonths = 1;
       } else {
-        // The base calculation
         worstCaseMonths = Math.ceil(remaining / pessimisticSavings);
 
-        // Apply scaling based on savings data quality
         const dataQualityFactor = Math.min(1, monthlySavingsData.filter((s) => s > 0).length / 6);
 
-        // Cap the worst case months with data quality consideration
-        // Higher quality data = stricter cap
-        const maxMonths = 36 + (1 - dataQualityFactor) * 84; // Between 36 and 120 months
+        const maxMonths = 36 + (1 - dataQualityFactor) * 84;
 
-        // Apply the cap
         worstCaseMonths = Math.min(Math.round(maxMonths), worstCaseMonths);
       }
 
       const expectedMonths = Math.max(1, Math.ceil(remaining / Math.max(1, safeMonthlySavings)));
       const projectedDate = addMonths(new Date(), expectedMonths);
 
-      // Calculate probability with more factors
       const probability = this._calculateEnhancedGoalProbability(
         Math.abs(safeMonthlySavings),
         remaining,
@@ -1089,75 +975,58 @@ export default class AdvancedAIForecastService {
       return goalForecast;
     } catch (error) {
       console.error('Error in _calculateEnhancedGoalForecast:', error);
-      throw error; // Propagate error to be handled in updateForecasts
+      throw error;
     }
   }
 
   _calculateEnhancedGoalProbability(monthlySavings, remaining, targetAmount, variability, historicalSavings) {
     try {
-      if (remaining <= 0) return 100; // Already achieved
-      if (monthlySavings <= 0) return 0; // No savings
+      if (remaining <= 0) return 100;
+      if (monthlySavings <= 0) return 0;
 
-      // Check how many months had negative savings
       const negativeMonths = historicalSavings ? historicalSavings.filter((s) => s <= 0).length : 0;
       const positiveMonths = historicalSavings ? historicalSavings.filter((s) => s > 0).length : 0;
       const positiveRatio =
         historicalSavings && historicalSavings.length > 0 ? positiveMonths / historicalSavings.length : 0.5;
 
-      // Base achievement factor - using both target and time-based calculation
-      // Scale by remaining percentage and months needed
       const percentageRemaining = remaining / (targetAmount || 1);
       const monthsNeeded = remaining / (monthlySavings || 1);
 
-      // Lower achievement factor for longer timeframes
       const achievementFactor = Math.min(
         1,
-        (1 - percentageRemaining) * 0.5 + // 50% weight to percentage completed
-          (monthsNeeded <= 12 ? 0.5 : 0.5 * (12 / monthsNeeded)), // 50% weight to time factor
+        (1 - percentageRemaining) * 0.5 + (monthsNeeded <= 12 ? 0.5 : 0.5 * (12 / monthsNeeded)),
       );
 
-      // Variability factor - ratio of savings to variability
       const variabilityFactor = Math.max(0.3, Math.min(1, monthlySavings / (variability + 1)));
 
-      // Consistency factor - based on how many months had positive savings
       const consistencyFactor = Math.max(0.4, positiveRatio);
 
-      // Trend analysis - are savings increasing or decreasing?
       let trendFactor = 0;
       if (historicalSavings && historicalSavings.length >= 3) {
         const recentAvg = historicalSavings.slice(0, 3).reduce((a, b) => a + b, 0) / 3;
         const olderAvg =
           historicalSavings.slice(3).reduce((a, b) => a + b, 0) / Math.max(1, historicalSavings.slice(3).length);
 
-        // Stronger impact from trend
         trendFactor = recentAvg >= olderAvg ? 0.3 : -0.2;
       }
 
-      // Calculate baseline probability
       let baselineProbability =
-        40 + // Base probability of 40%
-        achievementFactor * 30 + // Up to 30% from achievement
-        variabilityFactor * 15 + // Up to 15% from stability
-        consistencyFactor * 10 + // Up to 10% from consistency
-        trendFactor * 15; // Up to +15% / -10% from trend
+        40 + achievementFactor * 30 + variabilityFactor * 15 + consistencyFactor * 10 + trendFactor * 15;
 
-      // Apply a penalty for negative months
       if (negativeMonths > 0) {
-        baselineProbability -= negativeMonths * 8; // Each negative month reduces probability
+        baselineProbability -= negativeMonths * 8;
       }
 
-      // Ensure probability stays between 0 and 100
       let finalProbability = Math.max(0, Math.min(100, Math.round(baselineProbability)));
 
-      // Ensure minimum probability with positive savings
       if (monthlySavings > 0 && finalProbability < 5) {
-        finalProbability = 5; // Minimum 5% probability if any positive savings
+        finalProbability = 5;
       }
 
       return finalProbability;
     } catch (error) {
       console.error('Error in _calculateEnhancedGoalProbability:', error);
-      // Return a reasonable default with minimum of 5%
+
       return Math.min(Math.max(Math.round((monthlySavings / (remaining || 1)) * 50), monthlySavings > 0 ? 5 : 0), 100);
     }
   }
@@ -1166,7 +1035,6 @@ export default class AdvancedAIForecastService {
     try {
       const risks = [];
 
-      // Assess savings consistency
       const variabilityRatio = variability / (monthlySavings || 1);
       if (variabilityRatio > 0.5) {
         risks.push({
@@ -1176,7 +1044,6 @@ export default class AdvancedAIForecastService {
         });
       }
 
-      // Assess negative trend
       if (historicalSavings && historicalSavings.length >= 4) {
         const recentAvg = historicalSavings.slice(0, 2).reduce((a, b) => a + b, 0) / 2;
         const olderAvg = historicalSavings.slice(2, 4).reduce((a, b) => a + b, 0) / 2;
@@ -1191,7 +1058,6 @@ export default class AdvancedAIForecastService {
         }
       }
 
-      // Assess if goal is too ambitious
       const monthsRequired = remaining / (monthlySavings || 1);
       if (monthsRequired > 36) {
         risks.push({
@@ -1201,7 +1067,6 @@ export default class AdvancedAIForecastService {
         });
       }
 
-      // Assess negative months
       if (historicalSavings && historicalSavings.length > 0) {
         const negativeMonths = historicalSavings.filter((s) => s < 0).length;
         if (negativeMonths > 0) {
@@ -1238,14 +1103,13 @@ export default class AdvancedAIForecastService {
   }
 
   _getDefaultValue(series, type) {
-    // Get average from series, or default to reasonable amounts
     if (series && series.length > 0) {
       const validValues = series.filter((val) => !isNaN(val) && val !== null);
       if (validValues.length > 0) {
         return validValues.reduce((sum, val) => sum + val, 0) / validValues.length;
       }
     }
-    // Default fallback values
+
     return type === 'expense' ? 1000 : 1500;
   }
 
@@ -1272,10 +1136,8 @@ export default class AdvancedAIForecastService {
   }
 
   _extractMonthlyPatterns(dates, expenses, incomes) {
-    // Create patterns by month (1-12)
     const monthlyData = {};
 
-    // Initialize with default values
     for (let i = 1; i <= 12; i++) {
       monthlyData[i] = {
         expenses: [],
@@ -1285,22 +1147,19 @@ export default class AdvancedAIForecastService {
       };
     }
 
-    // Group data by month
     dates.forEach((dateStr, i) => {
       if (!isValid(parseISO(dateStr))) return;
 
-      const month = parseInt(dateStr.split('-')[1]); // Extract month from YYYY-MM
+      const month = parseInt(dateStr.split('-')[1]);
       if (month >= 1 && month <= 12) {
         if (i < expenses.length) monthlyData[month].expenses.push(expenses[i]);
         if (i < incomes.length) monthlyData[month].incomes.push(incomes[i]);
       }
     });
 
-    // Calculate average values
     const avgExpense = expenses.reduce((sum, val) => sum + val, 0) / expenses.length || 1;
     const avgIncome = incomes.reduce((sum, val) => sum + val, 0) / incomes.length || 1;
 
-    // Calculate monthly factors
     for (let i = 1; i <= 12; i++) {
       const monthExpenses = monthlyData[i].expenses;
       const monthIncomes = monthlyData[i].incomes;
@@ -1320,23 +1179,20 @@ export default class AdvancedAIForecastService {
   }
 
   _getMonthVariation(monthOffset, monthNumber) {
-    // Create deterministic but different variations for each month
-    // Use monthOffset and monthNumber to generate unique variations
     const seed = (monthOffset * 7 + monthNumber * 13) % 100;
     const normalizedSeed = seed / 100;
 
     return {
-      expenseVariation: normalizedSeed * 0.2 - 0.1, // -10% to +10%
-      incomeVariation: ((normalizedSeed + 0.2) % 1) * 0.2 - 0.1, // -10% to +10% (different from expense)
-      trendVariation: ((normalizedSeed + 0.5) % 1) * 0.1 - 0.05, // -5% to +5%
-      confidenceVariation: -monthOffset * 2, // Confidence decreases with time
+      expenseVariation: normalizedSeed * 0.2 - 0.1,
+      incomeVariation: ((normalizedSeed + 0.2) % 1) * 0.2 - 0.1,
+      trendVariation: ((normalizedSeed + 0.5) % 1) * 0.1 - 0.05,
+      confidenceVariation: -monthOffset * 2,
     };
   }
 
   async _predictCategoriesWithVariation(categoryData, monthOffset, dates, monthPattern, monthVariation) {
     const predictions = {};
 
-    // If we have no category data, try to get recent transactions to generate basic predictions
     if (Object.keys(categoryData).length === 0) {
       try {
         const recentTransactions = await TransactionCollection.find({
@@ -1344,7 +1200,6 @@ export default class AdvancedAIForecastService {
           date: { $gte: subMonths(new Date(), 3) },
         }).sort({ date: -1 });
 
-        // Group transactions by category
         const categoryTotals = {};
         recentTransactions.forEach((transaction) => {
           if (!categoryTotals[transaction.category]) {
@@ -1358,7 +1213,6 @@ export default class AdvancedAIForecastService {
           categoryTotals[transaction.category].count += 1;
         });
 
-        // Generate predictions based on recent transactions
         for (const [category, data] of Object.entries(categoryTotals)) {
           const avgAmount = data.total / data.count;
           const variationFactor =
@@ -1377,20 +1231,16 @@ export default class AdvancedAIForecastService {
       }
     }
 
-    // Process each category
     for (const [category, data] of Object.entries(categoryData)) {
       try {
-        // Calculate base amount from available data
         const validAmounts = data.amounts.filter((amount) => amount > 0);
         const baseAmount =
           validAmounts.length > 0 ? validAmounts.reduce((sum, val) => sum + val, 0) / validAmounts.length : 0;
 
-        // Apply variation and pattern factors
         const variationFactor =
           data.type === 'expense' ? monthVariation.expenseVariation : monthVariation.incomeVariation;
         const patternFactor = data.type === 'expense' ? monthPattern.expenseFactor : monthPattern.incomeFactor;
 
-        // Calculate prediction with variation
         const prediction = baseAmount * patternFactor * (1 + variationFactor);
 
         predictions[category] = {
@@ -1399,7 +1249,7 @@ export default class AdvancedAIForecastService {
         };
       } catch (error) {
         console.error(`Error predicting for category ${category}:`, error);
-        // Fallback to simple prediction
+
         predictions[category] = {
           amount: data.type === 'expense' ? 1000 : 1500,
           type: data.type,
@@ -1414,18 +1264,15 @@ export default class AdvancedAIForecastService {
     const date = addMonths(new Date(), monthOffset + 1);
     const monthNumber = parseInt(format(date, 'MM'));
 
-    // Create deterministic but varying values
     const seed = (monthOffset * 7 + monthNumber * 13) % 100;
-    const variationFactor = 1 + ((seed / 100) * 0.4 - 0.2); // -20% to +20%
-    const expenseVariation = 1 + ((seed / 100) * 0.3 - 0.15); // -15% to +15%
-    const incomeVariation = 1 + ((((seed + 50) % 100) / 100) * 0.3 - 0.15); // -15% to +15%
+    const variationFactor = 1 + ((seed / 100) * 0.4 - 0.2);
+    const expenseVariation = 1 + ((seed / 100) * 0.3 - 0.15);
+    const incomeVariation = 1 + ((((seed + 50) % 100) / 100) * 0.3 - 0.15);
 
-    // Vary the default values based on month
     const baseExpense = 1000 * expenseVariation;
     const baseIncome = 1500 * incomeVariation;
     const baseBalance = Math.max(0, baseIncome - baseExpense);
 
-    // Confidence decreases with time
     const confidenceBase = Math.max(60, 90 - monthOffset * 2);
 
     return {
@@ -1489,20 +1336,15 @@ export default class AdvancedAIForecastService {
     }
   }
 
-  // Helper method to calculate confidence based on data and prediction
   _calculateConfidence(prediction, average, dataPoints, monthOffset, type) {
-    // Base confidence factors
-    const dataQualityFactor = Math.min(1, Math.max(0.5, dataPoints / 12)); // More data = higher confidence
-    const timeDecayFactor = Math.max(0.5, 1 - monthOffset * 0.03); // Further in future = lower confidence
+    const dataQualityFactor = Math.min(1, Math.max(0.5, dataPoints / 12));
+    const timeDecayFactor = Math.max(0.5, 1 - monthOffset * 0.03);
 
-    // Check prediction quality
     const predictionRatio = prediction / (average || 1);
-    const plausibilityFactor = predictionRatio > 0.3 && predictionRatio < 3 ? 1 : 0.7; // Penalize extreme predictions
+    const plausibilityFactor = predictionRatio > 0.3 && predictionRatio < 3 ? 1 : 0.7;
 
-    // Calculate final confidence
     const baseConfidence = 80 * dataQualityFactor * timeDecayFactor * plausibilityFactor;
 
-    // Add type-specific adjustments (income is generally more predictable than expenses)
     const typeAdjustment = type === 'income' ? 5 : 0;
 
     return Math.min(95, Math.max(60, baseConfidence + typeAdjustment));

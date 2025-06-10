@@ -3,26 +3,21 @@ import { ForecastCollection } from '../db/models/Forecast.js';
 import { TransactionCollection } from '../db/models/Transaction.js';
 import { format, addMonths, subMonths } from 'date-fns';
 
-// Create an instance of the forecast service
 const forecastService = new AdvancedMachineLearningForecastService();
 
-// Cache duration constants for different forecast types
-const GOAL_FORECAST_CACHE_DURATION = 60 * 60 * 1000; // 1 hour for goal forecasts
-const BUDGET_FORECAST_CACHE_DURATION = 12 * 60 * 60 * 1000; // 12 hours for budget forecasts
-const CATEGORY_FORECAST_CACHE_DURATION = 6 * 60 * 60 * 1000; // 6 hours for category forecasts
-const QUICK_ESTIMATE_CACHE_DURATION = 15 * 60 * 1000; // 15 minutes for quick estimates
+const GOAL_FORECAST_CACHE_DURATION = 60 * 60 * 1000;
+const BUDGET_FORECAST_CACHE_DURATION = 12 * 60 * 60 * 1000;
+const CATEGORY_FORECAST_CACHE_DURATION = 6 * 60 * 60 * 1000;
+const QUICK_ESTIMATE_CACHE_DURATION = 15 * 60 * 1000;
 
-// Update forecasts whenever a transaction, goal, or balance changes
 export const updateForecasts = async (userId, session = null, forceUpdate = false) => {
   try {
     console.log(`Starting forecast update process for user ${userId}, forceUpdate: ${forceUpdate}`);
     const startTime = Date.now();
 
-    // First, check if we need to update
     if (!forceUpdate) {
       const existingForecast = await ForecastCollection.findOne({ userId });
 
-      // If we have a recent forecast and not forcing update, use the cached version
       if (existingForecast && existingForecast.lastUpdated) {
         const timeSinceLastUpdate = Date.now() - new Date(existingForecast.lastUpdated).getTime();
         if (timeSinceLastUpdate < QUICK_ESTIMATE_CACHE_DURATION) {
@@ -34,15 +29,12 @@ export const updateForecasts = async (userId, session = null, forceUpdate = fals
       console.log('Forcing forecast update after transaction');
     }
 
-    // First, generate quick estimates for immediate display
     console.log('Generating quick estimates...');
     const quickEstimates = await generateQuickEstimates(userId);
 
-    // Generate 30-day budget forecast
     console.log('Generating 30-day budget...');
     const thirtyDayBudget = await generateThirtyDayBudget(userId);
 
-    // Update the forecast document with quick estimates and set status to in_progress
     const initialUpdate = await ForecastCollection.findOneAndUpdate(
       { userId },
       {
@@ -55,7 +47,6 @@ export const updateForecasts = async (userId, session = null, forceUpdate = fals
       { upsert: true, new: true, session },
     );
 
-    // Then proceed with full forecast calculation
     console.log('Proceeding with full forecast calculation...');
     let result;
     if (session) {
@@ -72,18 +63,15 @@ export const updateForecasts = async (userId, session = null, forceUpdate = fals
   }
 };
 
-// Generate quick estimates for immediate display
 export const generateQuickEstimates = async (userId) => {
   try {
     const startTime = Date.now();
 
-    // Get recent transactions for quick analysis
     const recentTransactions = await TransactionCollection.find({
       userId,
       date: { $gte: subMonths(new Date(), 3) },
     }).sort({ date: -1 });
 
-    // Calculate average monthly income and expenses
     const monthlyData = {};
 
     recentTransactions.forEach((transaction) => {
@@ -106,7 +94,6 @@ export const generateQuickEstimates = async (userId) => {
       monthlyData[monthStr].count++;
     });
 
-    // Calculate averages
     const months = Object.keys(monthlyData);
     let totalIncome = 0;
     let totalExpense = 0;
@@ -121,32 +108,24 @@ export const generateQuickEstimates = async (userId) => {
     const avgIncome = months.length > 0 ? totalIncome / months.length : 0;
     const avgExpense = months.length > 0 ? totalExpense / months.length : 0;
 
-    // Calculate confidence based on data quality
     const confidence = Math.min(
       95,
       Math.max(
         50,
-        50 + // Base confidence
-          months.length * 10 + // More months = higher confidence
-          (totalCount > 20 ? 10 : 0) + // More transactions = higher confidence
-          (Math.abs(avgIncome - avgExpense) > 100 ? 10 : 0), // Clear difference between income and expense
+        50 + months.length * 10 + (totalCount > 20 ? 10 : 0) + (Math.abs(avgIncome - avgExpense) > 100 ? 10 : 0),
       ),
     );
 
-    // Generate quick estimates for next 3 months
     const quickEstimates = [];
     for (let i = 1; i <= 3; i++) {
       const date = addMonths(new Date(), i);
       const monthStr = format(date, 'yyyy-MM');
 
-      // Apply simple trend and seasonality factors
       const monthNumber = parseInt(format(date, 'MM'));
       const seasonalFactor = calculateSeasonalFactor(monthNumber);
 
-      // Simple trend factor (slight increase over time)
       const trendFactor = 1 + i * 0.02;
 
-      // Calculate projected values with seasonal and trend adjustments
       const projectedIncome = avgIncome * seasonalFactor * trendFactor;
       const projectedExpense = avgExpense * seasonalFactor * trendFactor;
       const projectedBalance = projectedIncome - projectedExpense;
@@ -156,7 +135,7 @@ export const generateQuickEstimates = async (userId) => {
         projectedExpense,
         projectedIncome,
         projectedBalance,
-        confidence: Math.max(50, confidence - i * 5), // Confidence decreases with time
+        confidence: Math.max(50, confidence - i * 5),
         lastCalculated: new Date(),
       });
     }
@@ -165,7 +144,7 @@ export const generateQuickEstimates = async (userId) => {
     return quickEstimates;
   } catch (error) {
     console.error('Error generating quick estimates:', error);
-    // Return safe default values
+
     return [
       {
         monthStr: format(addMonths(new Date(), 1), 'yyyy-MM'),
@@ -179,18 +158,15 @@ export const generateQuickEstimates = async (userId) => {
   }
 };
 
-// Generate 30-day budget forecast
 export const generateThirtyDayBudget = async (userId) => {
   try {
     const startTime = Date.now();
 
-    // Get recent transactions for analysis
     const recentTransactions = await TransactionCollection.find({
       userId,
       date: { $gte: subMonths(new Date(), 3) },
     }).sort({ date: -1 });
 
-    // Calculate average monthly income and expenses
     const monthlyData = {};
 
     recentTransactions.forEach((transaction) => {
@@ -213,7 +189,6 @@ export const generateThirtyDayBudget = async (userId) => {
       monthlyData[monthStr].count++;
     });
 
-    // Calculate averages
     const months = Object.keys(monthlyData);
     let totalIncome = 0;
     let totalExpense = 0;
@@ -228,24 +203,17 @@ export const generateThirtyDayBudget = async (userId) => {
     const avgIncome = months.length > 0 ? totalIncome / months.length : 0;
     const avgExpense = months.length > 0 ? totalExpense / months.length : 0;
 
-    // Calculate confidence based on data quality
     const confidence = Math.min(
       95,
       Math.max(
         50,
-        50 + // Base confidence
-          months.length * 10 + // More months = higher confidence
-          (totalCount > 20 ? 10 : 0) + // More transactions = higher confidence
-          (Math.abs(avgIncome - avgExpense) > 100 ? 10 : 0), // Clear difference between income and expense
+        50 + months.length * 10 + (totalCount > 20 ? 10 : 0) + (Math.abs(avgIncome - avgExpense) > 100 ? 10 : 0),
       ),
     );
 
-    // Calculate 30-day projections (approximately 1 month)
-    // Apply current month's seasonal factor
     const currentMonthNumber = parseInt(format(new Date(), 'MM'));
     const seasonalFactor = calculateSeasonalFactor(currentMonthNumber);
 
-    // Calculate projected values with seasonal adjustment
     const projectedIncome = avgIncome * seasonalFactor;
     const projectedExpense = avgExpense * seasonalFactor;
     const projectedBalance = projectedIncome - projectedExpense;
@@ -260,7 +228,7 @@ export const generateThirtyDayBudget = async (userId) => {
     };
   } catch (error) {
     console.error('Error generating 30-day budget forecast:', error);
-    // Return safe default values
+
     return {
       projectedExpense: 1000,
       projectedIncome: 1500,
@@ -271,18 +239,16 @@ export const generateThirtyDayBudget = async (userId) => {
   }
 };
 
-// Helper function to calculate seasonal factors
 const calculateSeasonalFactor = (monthNumber) => {
-  // Simple seasonal factors based on month
   const seasonalFactors = {
-    1: 1.1, // January (post-holiday spending)
-    2: 0.9, // February
-    3: 1.0, // March
-    4: 1.0, // April
-    5: 1.0, // May
-    6: 1.0, // June
-    7: 1.0, // July
-    8: 1.0, // August
+    1: 1.1,
+    2: 0.9,
+    3: 1.0,
+    4: 1.0,
+    5: 1.0,
+    6: 1.0,
+    7: 1.0,
+    8: 1.0,
     9: 1.0, // September
     10: 1.0, // October
     11: 1.1, // November (holiday shopping)
@@ -294,10 +260,8 @@ const calculateSeasonalFactor = (monthNumber) => {
 
 export const getGoalForecasts = async (userId) => {
   try {
-    // First check if we have an existing forecast
     let forecast = await ForecastCollection.findOne({ userId });
 
-    // If no forecast exists or it's older than the cache duration, update it
     if (
       !forecast ||
       !forecast.goalForecast ||
@@ -307,7 +271,6 @@ export const getGoalForecasts = async (userId) => {
       forecast = await forecastService.updateForecasts(userId);
     }
 
-    // Return only the goal forecast portion
     if (forecast && forecast.goalForecast) {
       return {
         goalForecast: forecast.goalForecast,
@@ -324,10 +287,8 @@ export const getGoalForecasts = async (userId) => {
 
 export const getCategoryForecasts = async (userId, specificCategory = null) => {
   try {
-    // First check if we have an existing forecast
     let forecast = await ForecastCollection.findOne({ userId });
 
-    // If no forecast exists or it's older than the cache duration, update it
     if (
       !forecast ||
       !forecast.budgetForecasts ||
@@ -343,11 +304,9 @@ export const getCategoryForecasts = async (userId, specificCategory = null) => {
       return null;
     }
 
-    // Extract all category predictions from forecasts
     const categoryData = {};
     const categories = [];
 
-    // Check if we have category predictions in any of the forecasts
     let hasCategoryPredictions = false;
 
     forecast.budgetForecasts.forEach((monthForecast) => {
@@ -356,7 +315,6 @@ export const getCategoryForecasts = async (userId, specificCategory = null) => {
       }
     });
 
-    // If we have no category predictions, generate default ones for new accounts
     if (!hasCategoryPredictions) {
       console.log('No category predictions found, generating defaults for new account');
       return generateDefaultCategoryForecasts(specificCategory);
@@ -365,7 +323,6 @@ export const getCategoryForecasts = async (userId, specificCategory = null) => {
     forecast.budgetForecasts.forEach((monthForecast) => {
       if (monthForecast.categoryPredictions) {
         Object.entries(monthForecast.categoryPredictions).forEach(([category, data]) => {
-          // If specific category is requested, filter others
           if (specificCategory && category !== specificCategory) {
             return;
           }
@@ -388,7 +345,6 @@ export const getCategoryForecasts = async (userId, specificCategory = null) => {
       }
     });
 
-    // Format response
     return {
       categories: Object.values(categoryData),
       lastUpdated: forecast.lastUpdated,
@@ -400,14 +356,12 @@ export const getCategoryForecasts = async (userId, specificCategory = null) => {
   }
 };
 
-// Helper function to generate default category forecasts for new accounts
 function generateDefaultCategoryForecasts(specificCategory = null) {
   const defaultExpenseCategories = ['Продукти', 'Транспорт', 'Розваги', 'Комунальні платежі'];
   const defaultIncomeCategories = ['Зарплата', 'Стипендія', 'Підробіток', 'Інше'];
 
   const categoryData = {};
 
-  // Generate data for the next 12 months
   const startDate = new Date();
   const months = [];
 
@@ -420,7 +374,6 @@ function generateDefaultCategoryForecasts(specificCategory = null) {
     });
   }
 
-  // Add default expense categories with random variations
   defaultExpenseCategories.forEach((category) => {
     if (specificCategory && category !== specificCategory) return;
 
@@ -430,7 +383,6 @@ function generateDefaultCategoryForecasts(specificCategory = null) {
       monthlyPredictions: [],
     };
 
-    // Base amount for each category
     const baseAmount =
       category === 'Продукти'
         ? 1000
@@ -442,9 +394,7 @@ function generateDefaultCategoryForecasts(specificCategory = null) {
         ? 800
         : 500;
 
-    // Generate monthly amounts with slight variations
     months.forEach((month) => {
-      // Random variation between -10% and +20%
       const variation = 0.9 + Math.random() * 0.3;
       categoryData[category].monthlyPredictions.push({
         month: month.monthStr,
@@ -454,7 +404,6 @@ function generateDefaultCategoryForecasts(specificCategory = null) {
     });
   });
 
-  // Add default income categories
   defaultIncomeCategories.forEach((category) => {
     if (specificCategory && category !== specificCategory) return;
 
@@ -464,7 +413,6 @@ function generateDefaultCategoryForecasts(specificCategory = null) {
       monthlyPredictions: [],
     };
 
-    // Base amount for each category
     const baseAmount =
       category === 'Зарплата'
         ? 2500
@@ -476,9 +424,7 @@ function generateDefaultCategoryForecasts(specificCategory = null) {
         ? 500
         : 1000;
 
-    // Generate monthly amounts with slight variations
     months.forEach((month) => {
-      // Random variation between -5% and +15%
       const variation = 0.95 + Math.random() * 0.2;
       categoryData[category].monthlyPredictions.push({
         month: month.monthStr,
@@ -495,13 +441,10 @@ function generateDefaultCategoryForecasts(specificCategory = null) {
   };
 }
 
-// New function to get quick estimates for immediate display
 export const getQuickEstimates = async (userId) => {
   try {
-    // First check if we have an existing forecast with recent quick estimates
     let forecast = await ForecastCollection.findOne({ userId });
 
-    // If no forecast exists or quick estimates are outdated, generate new ones
     if (
       !forecast ||
       !forecast.quickEstimates ||
@@ -512,7 +455,6 @@ export const getQuickEstimates = async (userId) => {
       const quickEstimates = await generateQuickEstimates(userId);
       const thirtyDayBudget = await generateThirtyDayBudget(userId);
 
-      // Update the forecast with new quick estimates
       forecast = await ForecastCollection.findOneAndUpdate(
         { userId },
         { quickEstimates, thirtyDayBudget, lastUpdated: new Date() },

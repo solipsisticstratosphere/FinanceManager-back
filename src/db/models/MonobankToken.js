@@ -10,22 +10,22 @@ const monobankTokenSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
-    // Храним токен в зашифрованном виде
+
     encryptedToken: {
       type: String,
       required: true,
     },
-    // Уникальный вектор инициализации для каждого токена
+
     iv: {
       type: String,
       required: true,
     },
-    // Дата последнего обновления транзакций
+
     lastSync: {
       type: Date,
       default: null,
     },
-    // Хранение информации о счетах пользователя
+
     accounts: [
       {
         id: String,
@@ -38,9 +38,7 @@ const monobankTokenSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// Метод для шифрования токена перед сохранением
 monobankTokenSchema.statics.encryptToken = function (token) {
-  // Используем переменную окружения для ключа шифрования
   const key = crypto.scryptSync(process.env.ENCRYPTION_SECRET, 'salt', 32);
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
@@ -54,7 +52,6 @@ monobankTokenSchema.statics.encryptToken = function (token) {
   };
 };
 
-// Метод для расшифровки токена
 monobankTokenSchema.statics.decryptToken = function (encryptedToken, iv) {
   const key = crypto.scryptSync(process.env.ENCRYPTION_SECRET, 'salt', 32);
   const decipher = crypto.createDecipheriv('aes-256-cbc', key, Buffer.from(iv, 'hex'));

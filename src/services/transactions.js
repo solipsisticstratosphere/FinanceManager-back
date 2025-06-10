@@ -104,12 +104,9 @@ const processSequentially = async (transactionData) => {
     try {
       console.log(`Invalidating caches for user ${userId} before forecast update...`);
 
-      // Invalidate all model caches to force retraining with new transaction data
-      // This is important for the model to learn from the new transaction
       const expenseModelKey = `model_${userId}_expense_lstm_w${DEFAULT_EXPENSE_WINDOW_SIZE}`;
       const incomeModelKey = `model_${userId}_income_lstm_w${DEFAULT_INCOME_WINDOW_SIZE}`;
 
-      // Delete all model variants to ensure fresh training
       for (const key of [...forecastService.trainedModels.keys()]) {
         if (key.startsWith(`model_${userId}`)) {
           console.log(`Invalidating model cache: ${key}`);
@@ -117,10 +114,8 @@ const processSequentially = async (transactionData) => {
         }
       }
 
-      // Clear forecast cache to ensure new forecasts will be generated
       forecastService.forecastCache.delete(`forecast_${userId}`);
 
-      // Clear goal calculation cache to recalculate based on new transaction
       forecastService.goalCalculationCache.delete(`goal_${userId}`);
 
       console.log(`Caches invalidated for user ${userId}.`);
@@ -131,7 +126,6 @@ const processSequentially = async (transactionData) => {
     console.log('Updating forecasts with new transaction data');
     let forecastUpdate = null;
     try {
-      // Use updateForecastsService with forceUpdate=true to ensure model retraining
       const updatedForecasts = await updateForecastsService(userId, null, true);
       console.log('Forecasts updated successfully', {
         forecastMethod: updatedForecasts.forecastMethod,
@@ -139,13 +133,11 @@ const processSequentially = async (transactionData) => {
         lastUpdated: updatedForecasts.lastUpdated,
       });
 
-      // Extract the first month forecast to return to the client
       const nextMonthForecast =
         updatedForecasts.budgetForecasts && updatedForecasts.budgetForecasts.length > 0
           ? updatedForecasts.budgetForecasts[0]
           : null;
 
-      // Prepare forecast update summary
       forecastUpdate = {
         updated: true,
         method: updatedForecasts.forecastMethod,
@@ -168,7 +160,7 @@ const processSequentially = async (transactionData) => {
       transaction,
       goalAchieved: goalUpdate?.isAchieved || false,
       updatedGoal: goalUpdate?.goal,
-      forecastUpdate, // Include forecast update information in the response
+      forecastUpdate,
     };
   } catch (error) {
     console.error('Sequential processing error:', {

@@ -52,13 +52,11 @@ export const refreshSessionController = async (req, res) => {
 
 export const logoutController = async (req, res) => {
   try {
-    // Get token from Authorization header
     const authHeader = req.headers.authorization;
     const token = authHeader?.split(' ')[1];
 
     await authServices.logout(token);
 
-    // Clear cookies if you're using them
     res.clearCookie('refreshToken');
     res.clearCookie('accessToken');
 

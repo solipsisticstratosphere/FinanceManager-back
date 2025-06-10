@@ -13,7 +13,6 @@ import ctrlWrapper from '../utils/crtlWrapper.js';
 
 const monobankRouter = Router();
 
-// Подключение Монобанка (сохранение токена)
 monobankRouter.post(
   '/connect',
   authenticate,
@@ -21,13 +20,10 @@ monobankRouter.post(
   ctrlWrapper(connectMonobankController),
 );
 
-// Отключение Монобанка (удаление токена)
 monobankRouter.delete('/disconnect', authenticate, ctrlWrapper(disconnectMonobankController));
 
-// Ручная синхронизация транзакций
 monobankRouter.post('/sync', authenticate, ctrlWrapper(syncMonobankTransactionsController));
 
-// Получение статуса подключения к Монобанку
 monobankRouter.get('/status', authenticate, ctrlWrapper(getMonobankStatusController));
 
 export default monobankRouter;
